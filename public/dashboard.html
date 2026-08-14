@@ -1,251 +1,29 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard — LilianTech</title>
-  <link rel="stylesheet" href="/styles.css">
-  <style>
-    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:30px 0}
-    .stat{padding:22px}.stat-value{font-size:30px;font-weight:800;margin-top:6px}
-    .survey-actions{display:flex;gap:10px;align-items:center}
-    .status{display:inline-flex;align-items:center;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
-    .status.available{background:#eef2ff;color:#5146a5}.status.progress{background:#fff7ed;color:#9a3412}.status.completed{background:#ecfdf3;color:#166534}
-    .history-item{display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-bottom:1px solid #eee}
-    .history-item:last-child{border-bottom:0}
-    .button.small{padding:9px 13px;font-size:14px;border:0;cursor:pointer}
-    .button.small:disabled{opacity:.6;cursor:not-allowed}
-    .notice{padding:14px 16px;border-radius:12px;background:#f8fafc;margin-top:16px}
-    @media(max-width:800px){.stats{grid-template-columns:repeat(2,1fr)}.history-item{flex-direction:column}.survey-actions{align-items:flex-start;flex-direction:column}}
-    @media(max-width:520px){.stats{grid-template-columns:1fr}}
-  </style>
-</head>
-<body>
-  <header>
-    <div class="container nav">
-      <a class="brand" href="/">Lilian<span>Tech</span></a>
-      <nav>
-        <a href="/">Home</a>
-        <a href="#surveys">Surveys</a>
-        <a href="#history">History</a>
-        <button id="logoutBtn" class="button secondary" type="button">Log out</button>
-      </nav>
-    </div>
-  </header>
-
-  <main class="section">
-    <div class="container">
-      <div id="loading" class="card feature">
-        <h1>Loading your dashboard…</h1>
-        <p class="muted">Checking your secure login session.</p>
-      </div>
-
-      <div id="dashboard" hidden>
-        <div class="hero-grid">
-          <div>
-            <div class="eyebrow">MEMBER DASHBOARD</div>
-            <h1>Welcome, <span id="name"></span>.</h1>
-            <p class="muted">Find surveys, track progress, and monitor your LilianTech rewards.</p>
-          </div>
-          <div class="card preview">
-            <div class="muted">Current balance</div>
-            <div id="balance" class="balance">$0.00</div>
-            <div class="muted">Available rewards in your account</div>
-          </div>
-        </div>
-
-        <div class="stats">
-          <div class="card stat"><div class="muted">Available surveys</div><div id="availableCount" class="stat-value">0</div></div>
-          <div class="card stat"><div class="muted">In progress</div><div id="progressCount" class="stat-value">0</div></div>
-          <div class="card stat"><div class="muted">Completed</div><div id="completedCount" class="stat-value">0</div></div>
-          <div class="card stat"><div class="muted">Survey earnings</div><div id="earnings" class="stat-value">$0.00</div></div>
-        </div>
-
-        <section id="surveys" class="section">
-          <h2>Available surveys</h2>
-          <p class="muted">Start a survey when you're ready. Its status will be saved to your account.</p>
-          <div id="surveysList" class="survey-list"></div>
-          <div id="surveyNotice" class="notice" hidden></div>
-        </section>
-
-        <section id="history" class="section">
-          <h2>Survey history</h2>
-          <div id="historyList" class="card feature"></div>
-        </section>
-
-        <section class="section">
-          <h2>Your account</h2>
-          <div class="card feature">
-            <p><strong>Name:</strong> <span id="accountName"></span></p>
-            <p><strong>Email:</strong> <span id="email"></span></p>
-            <p><strong>Member since:</strong> <span id="created"></span></p>
-          </div>
-        </section>
-      </div>
-    </div>
-  </main>
-
-  <script>
-    const loading = document.getElementById("loading");
-    const dashboard = document.getElementById("dashboard");
-    const logoutBtn = document.getElementById("logoutBtn");
-    const notice = document.getElementById("surveyNotice");
-
-    const money = (value) => Number(value || 0).toLocaleString("en-US", {
-      style: "currency", currency: "USD"
-    });
-
-    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
-      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;"
-    }[char]));
-
-    function statusFor(surveyId, activity) {
-      const item = activity.find((x) => x.survey_id === surveyId);
-      return item ? item.status : "available";
-    }
-
-    function surveyCard(survey, activity) {
-      const status = statusFor(survey.id, activity);
-      let action = "";
-
-      if (status === "available") {
-        action = `<button class="button primary small" data-action="start" data-id="${escapeHtml(survey.id)}">Start survey</button>`;
-      } else if (status === "in_progress") {
-        action = `<button class="button primary small" data-action="complete" data-id="${escapeHtml(survey.id)}">Mark completed</button>`;
-      } else {
-        action = `<span class="status completed">Completed</span>`;
-      }
-
-      const statusLabel = status === "available" ? "Available" :
-        status === "in_progress" ? "In Progress" : "Completed";
-
-      return `<div class="survey card">
-        <div>
-          <strong>${escapeHtml(survey.title)}</strong>
-          <div class="muted">${escapeHtml(survey.minutes)} min • ${escapeHtml(survey.provider)} • <strong>${escapeHtml(survey.reward)}</strong></div>
-          <span class="status ${status === "available" ? "available" : status === "in_progress" ? "progress" : "completed"}">${statusLabel}</span>
-        </div>
-        <div class="survey-actions">${action}</div>
-      </div>`;
-    }
-
-    function renderHistory(activity) {
-      const el = document.getElementById("historyList");
-      if (!activity.length) {
-        el.innerHTML = '<p class="muted">You have not started any surveys yet.</p>';
-        return;
-      }
-
-      el.innerHTML = activity.map((item) => `
-        <div class="history-item">
-          <div>
-            <strong>${escapeHtml(item.title)}</strong>
-            <div class="muted">${item.status === "completed" && item.completed_at
-              ? "Completed " + new Date(item.completed_at).toLocaleDateString()
-              : "Started " + new Date(item.started_at).toLocaleDateString()}</div>
-          </div>
-          <div>
-            <strong class="reward">${item.status === "completed" ? "+" : ""}${money(item.reward)}</strong>
-          </div>
-        </div>
-      `).join("");
-    }
-
-    async function loadDashboard() {
-      try {
-        const response = await fetch("/api/dashboard", {
-          credentials: "include",
-          cache: "no-store",
-          headers: { "Cache-Control": "no-cache" }
-        });
-
-        if (response.status === 401) {
-          window.location.replace("/login.html");
-          return;
-        }
-
-        if (!response.ok) throw new Error("Dashboard request failed");
-
-        const data = await response.json();
-        const user = data.user;
-
-        document.getElementById("name").textContent = user.full_name;
-        document.getElementById("accountName").textContent = user.full_name;
-        document.getElementById("email").textContent = user.email;
-        document.getElementById("balance").textContent = money(user.balance);
-        document.getElementById("created").textContent = new Date(user.created_at).toLocaleDateString();
-
-        document.getElementById("availableCount").textContent = data.stats.available;
-        document.getElementById("progressCount").textContent = data.stats.inProgress;
-        document.getElementById("completedCount").textContent = data.stats.completed;
-        document.getElementById("earnings").textContent = money(data.stats.completedEarnings);
-
-        const surveysResponse = await fetch("/api/surveys", { cache: "no-store" });
-        const surveys = await surveysResponse.json();
-        document.getElementById("surveysList").innerHTML =
-          surveys.map((survey) => surveyCard(survey, data.activity)).join("");
-
-        renderHistory(data.activity);
-
-        loading.hidden = true;
-        dashboard.hidden = false;
-      } catch (error) {
-        console.error(error);
-        loading.innerHTML = `
-          <h1>Unable to load your dashboard</h1>
-          <p class="muted">Please refresh the page. If the problem continues, check your deployment.</p>
-        `;
-      }
-    }
-
-    document.getElementById("surveysList").addEventListener("click", async (event) => {
-      const button = event.target.closest("button[data-action]");
-      if (!button) return;
-
-      button.disabled = true;
-      notice.hidden = true;
-
-      const action = button.dataset.action;
-      const surveyId = button.dataset.id;
-
-      try {
-        const response = await fetch(`/api/surveys/${encodeURIComponent(surveyId)}/${action}`, {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store",
-          headers: { "Content-Type": "application/json" }
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || "Unable to update survey.");
-        }
-
-        notice.textContent = data.message || "Survey updated.";
-        notice.hidden = false;
-        await loadDashboard();
-      } catch (error) {
-        notice.textContent = error.message;
-        notice.hidden = false;
-        button.disabled = false;
-      }
-    });
-
-    logoutBtn.addEventListener("click", async () => {
-      logoutBtn.disabled = true;
-      try {
-        await fetch("/api/logout", {
-          method: "POST",
-          credentials: "include",
-          cache: "no-store"
-        });
-      } finally {
-        window.location.replace("/");
-      }
-    });
-
-    loadDashboard();
-  </script>
-</body>
-</html>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dashboard — LilianTech</title><link rel="stylesheet" href="/styles.css"><style>
+.shell{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 72px)}.side{border-right:1px solid #e5e7eb;padding:22px;position:sticky;top:0;height:calc(100vh - 72px)}.side a,.side button{display:block;width:100%;text-align:left;padding:12px 14px;border:0;background:transparent;border-radius:10px;margin:4px 0;cursor:pointer;color:inherit}.side a.active,.side a:hover,.side button:hover{background:#f3f4f6}.content{padding:32px;max-width:1200px;width:100%}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.card{border:1px solid #e5e7eb;border-radius:16px;background:#fff;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.04)}.big{font-size:30px;font-weight:800;margin-top:7px}.section{margin-top:26px}.survey-row,.withdraw-row,.tx-row{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #eee;padding:16px 0}.survey-row:last-child,.withdraw-row:last-child,.tx-row:last-child{border-bottom:0}.pill{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:700}.available{background:#eef2ff}.progress{background:#fff7ed}.completed,.paid{background:#ecfdf3}.pending{background:#fff7ed}.rejected{background:#fef2f2}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid .full{grid-column:1/-1}label{display:block;font-weight:700;font-size:14px;margin-bottom:6px}input,select,textarea{width:100%;padding:11px 12px;border:1px solid #d1d5db;border-radius:10px;font:inherit}textarea{min-height:90px}.notice{margin:14px 0;padding:12px 14px;border-radius:10px;background:#f3f4f6}.muted{color:#6b7280}.hidden{display:none!important}.danger{color:#b91c1c}.success{color:#166534}@media(max-width:850px){.shell{grid-template-columns:1fr}.side{position:static;height:auto;border-right:0;border-bottom:1px solid #e5e7eb;display:flex;overflow:auto;gap:5px}.side a,.side button{white-space:nowrap;width:auto}.grid{grid-template-columns:1fr 1fr}.content{padding:20px}}@media(max-width:560px){.grid,.form-grid{grid-template-columns:1fr}.survey-row,.withdraw-row,.tx-row{align-items:flex-start;flex-direction:column}}
+</style></head><body>
+<header><div class="container nav"><a class="brand" href="/">Lilian<span>Tech</span></a><div><span id="topName" class="muted"></span> <button id="logoutBtn" class="button secondary" type="button">Log out</button></div></div></header>
+<div class="shell"><aside class="side"><a href="#overview" data-tab="overview">Overview</a><a href="#surveys" data-tab="surveys">Surveys</a><a href="#earnings" data-tab="earnings">Earnings</a><a href="#withdrawals" data-tab="withdrawals">Withdrawals</a><a href="#profile" data-tab="profile">Profile</a><a id="adminLink" href="/admin.html" hidden>Admin</a></aside>
+<main class="content"><div id="loading" class="card"><h1>Loading your dashboard…</h1><p class="muted">Checking your secure session.</p></div><div id="app" hidden>
+<section data-section="overview"><div class="hero-grid"><div><div class="eyebrow">MEMBER DASHBOARD</div><h1>Welcome, <span id="name"></span>.</h1><p class="muted">Manage surveys, earnings and withdrawals from one place.</p></div><div class="card"><div class="muted">Available balance</div><div id="balance" class="big">$0.00</div><div id="pendingBalance" class="muted">$0.00 pending withdrawals</div></div></div><div class="grid section"><div class="card"><div class="muted">Available surveys</div><div id="availableCount" class="big">0</div></div><div class="card"><div class="muted">In progress</div><div id="progressCount" class="big">0</div></div><div class="card"><div class="muted">Completed</div><div id="completedCount" class="big">0</div></div><div class="card"><div class="muted">Total earned</div><div id="totalEarned" class="big">$0.00</div></div></div><div class="card section"><h2>Recent activity</h2><div id="recent"></div></div></section>
+<section data-section="surveys" hidden><h1>Surveys</h1><p class="muted">Available surveys from LilianTech and approved providers appear here.</p><div id="surveyNotice" class="notice" hidden></div><div id="surveysList" class="card"></div></section>
+<section data-section="earnings" hidden><h1>Earnings</h1><div class="grid"><div class="card"><div class="muted">Total earned</div><div id="eTotal" class="big">$0.00</div></div><div class="card"><div class="muted">Pending withdrawals</div><div id="ePending" class="big">$0.00</div></div><div class="card"><div class="muted">Available</div><div id="eAvailable" class="big">$0.00</div></div></div><div class="card section"><h2>Transaction history</h2><div id="transactions"></div></div></section>
+<section data-section="withdrawals" hidden><h1>Withdrawals</h1><div class="card"><h2>Request a withdrawal</h2><p class="muted">Minimum withdrawal: <strong id="minimum"></strong>. Pending requests reduce your available amount until resolved.</p><div id="withdrawNotice" class="notice" hidden></div><form id="withdrawForm"><div class="form-grid"><div><label>Amount</label><input id="amount" type="number" step="0.01" min="0" required></div><div><label>Payment method</label><select id="method" required><option value="PayPal">PayPal</option><option value="Bank transfer">Bank transfer</option><option value="Wise">Wise</option></select></div><div class="full"><label>Payment details</label><input id="details" placeholder="Email, account details, or payout identifier" required></div></div><button class="button primary" type="submit">Submit withdrawal</button></form></div><div class="card section"><h2>Withdrawal history</h2><div id="withdrawalsList"></div></div></section>
+<section data-section="profile" hidden><h1>Profile & payout settings</h1><div class="card"><div id="profileNotice" class="notice" hidden></div><form id="profileForm"><div class="form-grid"><div><label>Full name</label><input id="fullName" required></div><div><label>Email</label><input id="email" disabled></div><div><label>Phone</label><input id="phone"></div><div><label>Preferred payment method</label><select id="paymentMethod"><option value="">Select</option><option>PayPal</option><option>Bank transfer</option><option>Wise</option></select></div><div class="full"><label>Default payment details</label><textarea id="paymentDetails"></textarea></div></div><button class="button primary" type="submit">Save profile</button></form></div></section>
+</div></main></div>
+<script>
+const $=id=>document.getElementById(id), money=v=>Number(v||0).toLocaleString('en-US',{style:'currency',currency:'USD'}), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+let state={dashboard:null,surveys:[],earnings:null,withdrawals:null};
+function showTab(tab){document.querySelectorAll('[data-section]').forEach(s=>s.hidden=s.dataset.section!==tab);document.querySelectorAll('[data-tab]').forEach(a=>a.classList.toggle('active',a.dataset.tab===tab));location.hash=tab}
+async function api(url,opt={}){const r=await fetch(url,{credentials:'include',cache:'no-store',...opt,headers:{'Content-Type':'application/json',...(opt.headers||{})}});let d={};try{d=await r.json()}catch{}if(r.status===401){location.replace('/login.html');throw Error('Session expired.')}if(!r.ok)throw Error(d.error||'Request failed');return d}
+function renderDashboard(){const d=state.dashboard,u=d.user;$('name').textContent=u.full_name;$('topName').textContent=u.email;$('balance').textContent=money(state.earnings?.available);$('pendingBalance').textContent=`${money(state.earnings?.pending)} pending withdrawals`;$('availableCount').textContent=d.stats.available;$('progressCount').textContent=d.stats.inProgress;$('completedCount').textContent=d.stats.completed;$('totalEarned').textContent=money(state.earnings?.total);$('eTotal').textContent=money(state.earnings?.total);$('ePending').textContent=money(state.earnings?.pending);$('eAvailable').textContent=money(state.earnings?.available);$('recent').innerHTML=d.activity.slice(0,5).map(x=>`<div class="tx-row"><div><strong>${esc(x.title)}</strong><div class="muted">${esc(x.status)} • ${new Date(x.completed_at||x.started_at).toLocaleDateString()}</div></div><strong>${x.status==='completed'?'+':''}${money(x.reward)}</strong></div>`).join('')||'<p class="muted">No survey activity yet.</p>';if(u.role==='admin')$('adminLink').hidden=false;$('fullName').value=u.full_name;$('email').value=u.email;$('phone').value=u.phone||'';$('paymentMethod').value=u.payment_method||'';$('paymentDetails').value=u.payment_details||''}
+function renderSurveys(){const act=state.dashboard.activity;$('surveysList').innerHTML=state.surveys.map(s=>{const a=act.find(x=>x.survey_id===s.id);const st=a?.status||'available';const button=st==='available'?`<button class="button primary small" data-action="start" data-id="${esc(s.id)}">Start</button>`:st==='in_progress'?`<button class="button primary small" data-action="complete" data-id="${esc(s.id)}">Complete</button>`:'<span class="pill completed">Completed</span>';return `<div class="survey-row"><div><strong>${esc(s.title)}</strong><div class="muted">${s.minutes} min • ${esc(s.provider)} • ${esc(s.reward)}</div><span class="pill ${st==='available'?'available':st==='in_progress'?'progress':'completed'}">${st.replace('_',' ')}</span></div><div>${button}</div></div>`}).join('')||'<p class="muted">No surveys are available right now.</p>'}
+function renderEarnings(){ $('transactions').innerHTML=state.earnings.transactions.map(x=>`<div class="tx-row"><div><strong>${esc(x.description)}</strong><div class="muted">${new Date(x.created_at).toLocaleString()}</div></div><strong class="${Number(x.amount)>=0?'success':'danger'}">${Number(x.amount)>=0?'+':''}${money(x.amount)}</strong></div>`).join('')||'<p class="muted">No transactions yet.</p>'}
+function renderWithdrawals(){ $('minimum').textContent=money(state.withdrawals.minimumWithdrawal);$('withdrawalsList').innerHTML=state.withdrawals.withdrawals.map(w=>`<div class="withdraw-row"><div><strong>${money(w.amount)} via ${esc(w.method)}</strong><div class="muted">${new Date(w.created_at).toLocaleString()}</div></div><span class="pill ${esc(w.status)}">${esc(w.status)}</span></div>`).join('')||'<p class="muted">No withdrawal requests yet.</p>'}
+async function refresh(){state.dashboard=await api('/api/dashboard');state.earnings=await api('/api/earnings');state.withdrawals=await api('/api/withdrawals');const sr=await api('/api/surveys');state.surveys=sr;renderDashboard();renderSurveys();renderEarnings();renderWithdrawals();$('loading').hidden=true;$('app').hidden=false;showTab(location.hash.slice(1)||'overview')}
+document.querySelector('.side').addEventListener('click',e=>{const a=e.target.closest('[data-tab]');if(a){e.preventDefault();showTab(a.dataset.tab)}});
+$('surveysList').addEventListener('click',async e=>{const b=e.target.closest('button[data-action]');if(!b)return;b.disabled=true;try{const d=await api(`/api/surveys/${encodeURIComponent(b.dataset.id)}/${b.dataset.action}`,{method:'POST',body:'{}'});$('surveyNotice').textContent=d.message;$('surveyNotice').hidden=false;await refresh();showTab('surveys')}catch(x){$('surveyNotice').textContent=x.message;$('surveyNotice').hidden=false;b.disabled=false}});
+$('withdrawForm').addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/withdrawals',{method:'POST',body:JSON.stringify({amount:$('amount').value,method:$('method').value,details:$('details').value})});$('withdrawNotice').textContent=d.message;$('withdrawNotice').hidden=false;e.target.reset();await refresh();showTab('withdrawals')}catch(x){$('withdrawNotice').textContent=x.message;$('withdrawNotice').hidden=false}});
+$('profileForm').addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/profile',{method:'PUT',body:JSON.stringify({fullName:$('fullName').value,phone:$('phone').value,paymentMethod:$('paymentMethod').value,paymentDetails:$('paymentDetails').value})});$('profileNotice').textContent=d.message;$('profileNotice').hidden=false;await refresh();showTab('profile')}catch(x){$('profileNotice').textContent=x.message;$('profileNotice').hidden=false}});
+$('logoutBtn').onclick=async()=>{try{await fetch('/api/logout',{method:'POST',credentials:'include'})}finally{location.replace('/')}};
+refresh().catch(e=>{console.error(e);$('loading').innerHTML='<h1>Unable to load dashboard</h1><p class="muted">Refresh the page and try again.</p>'});
+</script></body></html>
