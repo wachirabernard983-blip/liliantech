@@ -1,21 +1,47 @@
-
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
+const session = require("express-session");
+const connectPgSimple = require("connect-pg-simple");
 const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+const isProduction = process.env.NODE_ENV === "production";
+
+if (isProduction) {
+  app.set("trust proxy", 1);
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === "production"
+  ssl: isProduction
     ? { rejectUnauthorized: false }
     : false
 });
 
+const PgSession = connectPgSimple(session);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use(session({
+  store: new PgSession({
+    pool,
+    tableName: "user_sessions",
+    createTableIfMissing: true
+  }),
+  secret: process.env.SESSION_SECRET || "CHANGE_THIS_SESSION_SECRET_IN_RENDER",
+  resave: false,
+  saveUninitialized: false,
+  rolling: true,
+  cookie: {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: "lax",
+    maxAge: 1000 * 60 * 60 * 24 * 7
+  }
+}));
 
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -55,10 +81,35 @@ function verifyPassword(password, storedHash) {
     .scryptSync(password, salt, 64)
     .toString("hex");
 
-  return crypto.timingSafeEqual(
-    Buffer.from(hash, "hex"),
-    Buffer.from(originalHash, "hex")
+  const originalBuffer = Buffer.from(originalHash, "hex");
+  const hashBuffer = Buffer.from(hash, "hex");
+
+  if (originalBuffer.length !== hashBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(hashBuffer, originalBuffer);
+}
+
+function requireAuth(req, res, next) {
+  if (!req.session.userId) {
+    return res.status(401).json({
+      error: "Authentication required."
+    });
+  }
+
+  next();
+}
+
+async function getUserById(id) {
+  const result = await pool.query(
+    `SELECT id, full_name, email, balance, created_at
+     FROM users
+     WHERE id = $1`,
+    [id]
   );
+
+  return result.rows[0] || null;
 }
 
 app.get("/health", (req, res) => {
@@ -66,6 +117,36 @@ app.get("/health", (req, res) => {
     status: "ok",
     app: "LilianTech"
   });
+});
+
+app.get("/api/me", async (req, res) => {
+  try {
+    if (!req.session.userId) {
+      return res.status(401).json({
+        authenticated: false
+      });
+    }
+
+    const user = await getUserById(req.session.userId);
+
+    if (!user) {
+      req.session.destroy(() => {});
+      return res.status(401).json({
+        authenticated: false
+      });
+    }
+
+    res.json({
+      authenticated: true,
+      user
+    });
+  } catch (error) {
+    console.error("Session check error:", error);
+
+    res.status(500).json({
+      error: "Unable to check login session."
+    });
+  }
 });
 
 app.get("/api/surveys", (req, res) => {
@@ -166,6 +247,18 @@ app.post("/api/login", async (req, res) => {
       });
     }
 
+    await new Promise((resolve, reject) => {
+      req.session.regenerate((error) => {
+        if (error) return reject(error);
+
+        req.session.userId = user.id;
+        req.session.save((saveError) => {
+          if (saveError) return reject(saveError);
+          resolve();
+        });
+      });
+    });
+
     res.json({
       message: "Login successful.",
       user: {
@@ -181,6 +274,52 @@ app.post("/api/login", async (req, res) => {
 
     res.status(500).json({
       error: "Unable to log in."
+    });
+  }
+});
+
+app.post("/api/logout", (req, res) => {
+  if (!req.session) {
+    return res.json({ message: "Logged out successfully." });
+  }
+
+  req.session.destroy((error) => {
+    if (error) {
+      console.error("Logout error:", error);
+
+      return res.status(500).json({
+        error: "Unable to log out."
+      });
+    }
+
+    res.clearCookie("connect.sid", {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: "lax"
+    });
+
+    res.json({
+      message: "Logged out successfully."
+    });
+  });
+});
+
+app.get("/api/account", requireAuth, async (req, res) => {
+  try {
+    const user = await getUserById(req.session.userId);
+
+    if (!user) {
+      return res.status(401).json({
+        error: "Account not found."
+      });
+    }
+
+    res.json({ user });
+  } catch (error) {
+    console.error("Account error:", error);
+
+    res.status(500).json({
+      error: "Unable to load account."
     });
   }
 });
