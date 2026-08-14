@@ -1,1 +1,133 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Login — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:440px"><a class="brand" href="/">Lilian<span>Tech</span></a><h1>Welcome back</h1><p class="muted">Sign in to your LilianTech account.</p><input style="width:100%;padding:13px;margin:7px 0" type="email" placeholder="Email"><input style="width:100%;padding:13px;margin:7px 0 15px" type="password" placeholder="Password"><a class="button primary" style="width:100%" href="/">Sign in</a><p class="muted">New here? <a href="/register.html">Create an account</a></p></div></main></body></html>
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>Login — LilianTech</title>
+
+  <link rel="stylesheet" href="/styles.css">
+</head>
+
+<body>
+
+  <main class="section">
+
+    <div
+      class="container card feature"
+      style="max-width:440px"
+    >
+
+      <a class="brand" href="/">
+        Lilian<span>Tech</span>
+      </a>
+
+      <h1>Welcome back</h1>
+
+      <p class="muted">
+        Sign in to your LilianTech account.
+      </p>
+
+      <form id="loginForm">
+
+        <label for="email">Email</label>
+
+        <input
+          id="email"
+          name="email"
+          style="width:100%;padding:13px;margin:7px 0"
+          type="email"
+          placeholder="Email"
+          required
+        >
+
+        <label for="password">Password</label>
+
+        <input
+          id="password"
+          name="password"
+          style="width:100%;padding:13px;margin:7px 0 15px"
+          type="password"
+          placeholder="Password"
+          required
+        >
+
+        <button
+          class="button primary"
+          style="width:100%;border:0;cursor:pointer"
+          type="submit"
+        >
+          Sign in
+        </button>
+
+      </form>
+
+      <p id="message" class="muted"></p>
+
+      <p class="muted">
+        New here?
+        <a href="/register.html">Create an account</a>
+      </p>
+
+    </div>
+
+  </main>
+
+  <script>
+    const form = document.getElementById("loginForm");
+    const message = document.getElementById("message");
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      message.textContent = "Signing in...";
+
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+
+      try {
+        const response = await fetch("/api/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            email,
+            password
+          })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          message.textContent =
+            data.error || "Invalid email or password.";
+
+          return;
+        }
+
+        sessionStorage.setItem(
+          "liliantech_user",
+          JSON.stringify(data.user)
+        );
+
+        message.textContent =
+          "Login successful. Redirecting...";
+
+        setTimeout(() => {
+          window.location.href = "/";
+        }, 800);
+
+      } catch (error) {
+        console.error(error);
+
+        message.textContent =
+          "Unable to connect to LilianTech. Please try again.";
+      }
+    });
+  </script>
+
+</body>
+
+</html>
