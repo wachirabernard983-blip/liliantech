@@ -1,5 +1,6 @@
 [
-{"id":"cpx","name":"CPX Research","status":"Integration pending"},
-{"id":"bitlabs","name":"BitLabs","status":"Approval pending"},
-{"id":"cint","name":"Cint","status":"Application pending"}
+  {"id":"cpx","name":"CPX Research","status":"Connected when CPX credentials/postback are configured"},
+  {"id":"bitlabs","name":"BitLabs","status":"Connected when BitLabs API token/callback are configured"},
+  {"id":"cint","name":"Cint","status":"Ready for approved Exchange credentials"},
+  {"id":"dynata","name":"Dynata Respondent Exchange","status":"Ready for approved REX credentials"}
 ]
