@@ -130,6 +130,43 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
+  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS provider_reference VARCHAR(180)`);
+  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_error TEXT`);
+
+  // One-time cleanup of development/demo artifacts from earlier builds.
+  // Legitimate provider-backed records are preserved.
+  await pool.query(`
+    DELETE FROM provider_surveys
+    WHERE LOWER(provider_id) IN ('demo','test','local','mock')
+       OR LOWER(title) LIKE '%demo%'
+       OR LOWER(title) LIKE '%test survey%';
+  `);
+  await pool.query(`
+    DELETE FROM survey_activity
+    WHERE LOWER(survey_id) LIKE 'demo-%'
+       OR LOWER(survey_id) LIKE 'test-%'
+       OR LOWER(survey_id) LIKE 'local-%'
+       OR LOWER(title) LIKE '%demo%'
+       OR LOWER(title) LIKE '%test survey%';
+  `);
+  await pool.query(`
+    DELETE FROM transactions
+    WHERE LOWER(description) LIKE '%demo%'
+       OR LOWER(description) LIKE '%test earning%'
+       OR LOWER(description) LIKE '%test survey%';
+  `);
+  await pool.query(`
+    DELETE FROM withdrawals
+    WHERE LOWER(details) LIKE '%demo%'
+       OR LOWER(details) LIKE '%test%';
+  `);
+  // Rebuild balances from the remaining ledger so removed demo earnings cannot
+  // survive as hidden wallet balances.
+  await pool.query(`
+    UPDATE users u SET balance = COALESCE((
+      SELECT SUM(t.amount) FROM transactions t WHERE t.user_id=u.id
+    ), 0);
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS withdrawals (
@@ -141,7 +178,9 @@ async function initializeDatabase() {
       status VARCHAR(20) NOT NULL DEFAULT 'pending',
       admin_note TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      processed_at TIMESTAMPTZ
+      processed_at TIMESTAMPTZ,
+      provider_reference VARCHAR(180),
+      payout_error TEXT
     );
   `);
 
@@ -912,42 +951,235 @@ app.all('/api/providers/bitlabs/callback', async (req, res) => {
   }
 });
 
+// ---------- Payout providers ----------
+function payoutMode(method) {
+  if (method === 'M-Pesa') return process.env.MPESA_CONSUMER_KEY && process.env.MPESA_CONSUMER_SECRET && process.env.MPESA_SHORTCODE && process.env.MPESA_SECURITY_CREDENTIAL && process.env.MPESA_RESULT_URL ? 'automatic' : 'manual';
+  if (method === 'PayPal') return process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET && process.env.PAYPAL_SENDER_EMAIL ? 'automatic' : 'manual';
+  if (method === 'Wise') return process.env.WISE_API_TOKEN ? 'automatic' : 'manual';
+  if (method === 'Payoneer') return process.env.PAYONEER_API_TOKEN ? 'automatic' : 'manual';
+  return 'manual';
+}
+
+function getWithdrawalMethods() {
+  return [
+    { id: 'M-Pesa', label: 'M-Pesa', currency: 'KES', mode: payoutMode('M-Pesa'), speed: 'Fast', fields: [
+      { name: 'phone', label: 'M-Pesa phone number', type: 'tel', placeholder: '2547XXXXXXXX', required: true }
+    ]},
+    { id: 'PayPal', label: 'PayPal', currency: 'USD', mode: payoutMode('PayPal'), speed: 'Fast', fields: [
+      { name: 'email', label: 'PayPal email', type: 'email', placeholder: 'you@example.com', required: true }
+    ]},
+    { id: 'Wise', label: 'Wise', currency: 'USD', mode: payoutMode('Wise'), speed: 'Fast', fields: [
+      { name: 'fullName', label: 'Name on Wise account', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'email', label: 'Wise account email', type: 'email', placeholder: 'you@example.com', required: true },
+      { name: 'recipientId', label: 'Wise recipient/profile ID (if available)', type: 'text', placeholder: 'Optional', required: false }
+    ]},
+    { id: 'Payoneer', label: 'Payoneer', currency: 'USD', mode: payoutMode('Payoneer'), speed: 'Fast', fields: [
+      { name: 'fullName', label: 'Name on Payoneer account', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'email', label: 'Payoneer account email', type: 'email', placeholder: 'you@example.com', required: true },
+      { name: 'customerId', label: 'Payoneer customer ID (if available)', type: 'text', placeholder: 'Optional', required: false }
+    ]},
+    { id: 'Bank transfer', label: 'Bank transfer', currency: 'USD', mode: payoutMode('Bank transfer'), speed: 'Bank processing', fields: [
+      { name: 'accountName', label: 'Account holder name', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'bankName', label: 'Bank name', type: 'text', placeholder: 'e.g. KCB, Equity, Co-op', required: true },
+      { name: 'accountNumber', label: 'Account number', type: 'text', placeholder: 'Account number', required: true },
+      { name: 'branch', label: 'Branch / SWIFT (if applicable)', type: 'text', placeholder: 'Optional', required: false }
+    ]}
+  ];
+}
+
+function parseDetails(details) {
+  try { return JSON.parse(details); } catch { return { value: details }; }
+}
+
+async function mpesaAccessToken() {
+  const base = String(process.env.MPESA_ENV || 'sandbox').toLowerCase() === 'live'
+    ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
+  const auth = Buffer.from(`${process.env.MPESA_CONSUMER_KEY}:${process.env.MPESA_CONSUMER_SECRET}`).toString('base64');
+  const r = await fetch(`${base}/oauth/v1/generate?grant_type=client_credentials`, {
+    headers: { Authorization: `Basic ${auth}` }, signal: AbortSignal.timeout(10000)
+  });
+  if (!r.ok) throw new Error(`M-Pesa authentication failed (${r.status})`);
+  const d = await r.json();
+  return { base, token: d.access_token };
+}
+
+async function sendMpesaPayout(amountUsd, details, withdrawalId) {
+  const { base, token } = await mpesaAccessToken();
+  const phone = String(details.phone || '').replace(/\D/g, '');
+  if (!/^2547\d{8}$/.test(phone)) throw new Error('Enter a valid Kenyan M-Pesa number in 2547XXXXXXXX format.');
+  const usdToKes = Number(process.env.USD_TO_KES || 130);
+  const amountKes = Math.max(1, Math.round(Number(amountUsd) * usdToKes));
+  const payload = {
+    InitiatorName: process.env.MPESA_INITIATOR_NAME,
+    SecurityCredential: process.env.MPESA_SECURITY_CREDENTIAL,
+    CommandID: process.env.MPESA_COMMAND_ID || 'BusinessPayment',
+    Amount: amountKes,
+    PartyA: process.env.MPESA_SHORTCODE,
+    PartyB: phone,
+    Remarks: `LilianTech withdrawal ${withdrawalId}`,
+    QueueTimeOutURL: process.env.MPESA_TIMEOUT_URL || process.env.MPESA_RESULT_URL,
+    ResultURL: process.env.MPESA_RESULT_URL,
+    Occasion: `LT-${withdrawalId}`
+  };
+  const r = await fetch(`${base}/mpesa/b2c/v3/paymentrequest`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(15000)
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || d.ResponseCode && String(d.ResponseCode) !== '0') throw new Error(d.errorMessage || d.ResponseDescription || 'M-Pesa payout request failed.');
+  return d.OriginatorConversationID || d.ConversationID || d.TransactionID || `MPESA-${withdrawalId}`;
+}
+
+async function paypalAccessToken() {
+  const live = String(process.env.PAYPAL_ENV || 'sandbox').toLowerCase() === 'live';
+  const base = live ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const r = await fetch(`${base}/v1/oauth2/token`, {
+    method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials', signal: AbortSignal.timeout(10000)
+  });
+  if (!r.ok) throw new Error(`PayPal authentication failed (${r.status})`);
+  const d = await r.json();
+  return { base, token: d.access_token };
+}
+
+async function sendPaypalPayout(amountUsd, details, withdrawalId) {
+  const email = String(details.email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid PayPal email address.');
+  const { base, token } = await paypalAccessToken();
+  const batchId = `LT-${withdrawalId}-${Date.now()}`.slice(0, 30);
+  const payload = {
+    sender_batch_header: {
+      sender_batch_id: batchId,
+      email_subject: 'Your LilianTech withdrawal is on the way',
+      email_message: 'Your LilianTech withdrawal has been submitted to PayPal.'
+    },
+    items: [{ recipient_type: 'EMAIL', amount: { value: Number(amountUsd).toFixed(2), currency: 'USD' }, receiver: email, note: `LilianTech withdrawal ${withdrawalId}`, sender_item_id: String(withdrawalId) }]
+  };
+  const r = await fetch(`${base}/v1/payments/payouts`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload), signal: AbortSignal.timeout(15000)
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.message || 'PayPal payout request failed.');
+  return d.batch_header?.payout_batch_id || batchId;
+}
+
+async function executeAutomaticPayout(method, amount, details, withdrawalId) {
+  if (method === 'M-Pesa') return await sendMpesaPayout(amount, details, withdrawalId);
+  if (method === 'PayPal') return await sendPaypalPayout(amount, details, withdrawalId);
+  if (method === 'Wise') throw new Error('Wise payout integration is not enabled yet.');
+  if (method === 'Payoneer') throw new Error('Payoneer payout integration is not enabled yet.');
+  return null;
+}
+
+
+
+// Safaricom B2C result callback. Only a provider-confirmed ResultCode=0 can
+// finalize an M-Pesa payout and create the corresponding ledger debit.
+app.post('/api/payouts/mpesa/result', async (req, res) => {
+  try {
+    const result = req.body?.Result || req.body || {};
+    const code = Number(result.ResultCode ?? result.Result?.ResultCode);
+    const conversationId = String(result.OriginatorConversationID || result.ConversationID || '').trim();
+    const refText = String(result.ResultDesc || '');
+    if (!conversationId) return res.status(400).send('missing conversation');
+    const r = await pool.query(`SELECT * FROM withdrawals WHERE provider_reference=$1 FOR UPDATE`, [conversationId]);
+    if (!r.rows[0]) return res.status(404).send('withdrawal not found');
+    const w = r.rows[0];
+    if (w.status === 'paid') return res.status(200).send('ok');
+    if (code !== 0) {
+      await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1, processed_at=NOW() WHERE id=$2`, [refText.slice(0,500) || 'M-Pesa payout failed.', w.id]);
+      return res.status(200).send('ok');
+    }
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(`SELECT * FROM withdrawals WHERE id=$1 FOR UPDATE`, [w.id]);
+      if (locked.rows[0].status === 'paid') { await client.query('COMMIT'); return res.status(200).send('ok'); }
+      const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
+      if (Number(user.rows[0]?.balance || 0) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(409).send('insufficient balance'); }
+      await client.query(`UPDATE users SET balance=balance-$1 WHERE id=$2`, [w.amount,w.user_id]);
+      await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'withdrawal',$2,$3,$4)`, [w.user_id,-Number(w.amount),`Withdrawal paid via M-Pesa`,String(w.id)]);
+      await client.query(`UPDATE withdrawals SET status='paid', processed_at=NOW(), payout_error=NULL WHERE id=$1`, [w.id]);
+      await client.query('COMMIT');
+      return res.status(200).send('ok');
+    } catch(e) { await client.query('ROLLBACK').catch(()=>{}); throw e; } finally { client.release(); }
+  } catch(e) { console.error('M-Pesa result callback:',e); return res.status(500).send('error'); }
+});
+
+app.post('/api/payouts/mpesa/timeout', async (req,res) => {
+  try {
+    const result=req.body?.Result||req.body||{};
+    const ref=String(result.OriginatorConversationID||result.ConversationID||'').trim();
+    if(ref) await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1 WHERE provider_reference=$2 AND status='processing'`, ['M-Pesa payout timed out; please retry or review.',ref]);
+    return res.status(200).send('ok');
+  } catch(e) { console.error('M-Pesa timeout callback:',e); return res.status(500).send('error'); }
+});
+
 // ---------- Earnings, withdrawals, profile and administration ----------
 app.get("/api/earnings", requireAuth, async (req, res) => {
   try {
     const user = await getUserById(req.session.userId);
-    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved')`, [req.session.userId]);
+    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
     const tx = await pool.query(`SELECT id, type, amount, description, reference_id, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
     const pendingAmount = Number(pending.rows[0].amount || 0);
     res.json({ total: Number(user.balance || 0), pending: pendingAmount, available: Math.max(0, Number(user.balance || 0) - pendingAmount), transactions: tx.rows, minimumWithdrawal: getMinimumWithdrawal() });
   } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load earnings." }); }
 });
 
+app.get("/api/withdrawal-methods", requireAuth, async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ methods: getWithdrawalMethods(), minimumWithdrawal: getMinimumWithdrawal(), note: "Automatic payouts are available only when LilianTech has the required provider credentials configured. Otherwise the request is queued for administrator processing." });
+});
+
 app.get("/api/withdrawals", requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(`SELECT id, amount, method, details, status, admin_note, created_at, processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC`, [req.session.userId]);
-    res.json({ withdrawals: result.rows, minimumWithdrawal: getMinimumWithdrawal() });
+    const result = await pool.query(`SELECT id, amount, method, details, status, admin_note, provider_reference, payout_error, created_at, processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC`, [req.session.userId]);
+    res.json({ withdrawals: result.rows, minimumWithdrawal: getMinimumWithdrawal(), methods: getWithdrawalMethods() });
   } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
 });
 
 app.post("/api/withdrawals", requireAuth, async (req, res) => {
   const client = await pool.connect();
+  let withdrawal = null;
   try {
     const amount = Number(req.body.amount);
     const method = String(req.body.method || '').trim();
-    const details = String(req.body.details || '').trim();
+    const detailsObj = req.body.details && typeof req.body.details === 'object' ? req.body.details : {};
+    const details = JSON.stringify(detailsObj);
     const minimum = getMinimumWithdrawal();
+    const methods = getWithdrawalMethods();
+    const methodConfig = methods.find(m => m.id === method);
+    if (!methodConfig) return res.status(400).json({ error: "Select a supported withdrawal method." });
     if (!Number.isFinite(amount) || amount < minimum) return res.status(400).json({ error: `Minimum withdrawal is $${minimum.toFixed(2)}.` });
-    if (!method || !details) return res.status(400).json({ error: "Payment method and payment details are required." });
+    for (const field of methodConfig.fields) {
+      if (field.required && !String(detailsObj[field.name] || '').trim()) return res.status(400).json({ error: `${field.label} is required.` });
+    }
     await client.query('BEGIN');
     const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [req.session.userId]);
-    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved')`, [req.session.userId]);
+    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
     const available = Number(user.rows[0]?.balance || 0) - Number(pending.rows[0]?.amount || 0);
     if (amount > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Insufficient available balance." }); }
-    const result = await client.query(`INSERT INTO withdrawals (user_id, amount, method, details) VALUES ($1,$2,$3,$4) RETURNING id, amount, method, status, created_at`, [req.session.userId, amount.toFixed(2), method, details]);
+    const result = await client.query(`INSERT INTO withdrawals (user_id, amount, method, details, status) VALUES ($1,$2,$3,$4,'pending') RETURNING id, amount, method, details, status, created_at`, [req.session.userId, amount.toFixed(2), method, details]);
+    withdrawal = result.rows[0];
     await client.query('COMMIT');
-    res.status(201).json({ message: "Withdrawal request submitted.", withdrawal: result.rows[0] });
-  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); res.status(500).json({ error: "Unable to submit withdrawal." }); } finally { client.release(); }
+  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); return res.status(500).json({ error: "Unable to submit withdrawal." }); } finally { client.release(); }
+
+  // Try an actual provider payout only when credentials are present. Never mark a
+  // withdrawal paid merely because the request was accepted by LilianTech.
+  if (payoutMode(withdrawal.method) === 'automatic') {
+    try {
+      const reference = await executeAutomaticPayout(withdrawal.method, Number(withdrawal.amount), parseDetails(withdrawal.details), withdrawal.id);
+      await pool.query(`UPDATE withdrawals SET status='processing', provider_reference=$1, processed_at=NOW(), payout_error=NULL WHERE id=$2`, [reference, withdrawal.id]);
+      return res.status(201).json({ message: `Withdrawal submitted to ${withdrawal.method}. Provider confirmation is still required before it is marked paid.`, withdrawal: { ...withdrawal, status: 'processing', provider_reference: reference } });
+    } catch (e) {
+      console.error(`${withdrawal.method} payout error:`, e);
+      await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1 WHERE id=$2`, [String(e.message || e).slice(0,500), withdrawal.id]);
+      return res.status(202).json({ message: `Withdrawal saved, but the ${withdrawal.method} payout could not be submitted automatically. It remains pending for review.`, withdrawal: { ...withdrawal, status: 'pending' } });
+    }
+  }
+  res.status(201).json({ message: "Withdrawal request submitted and queued for processing.", withdrawal });
 });
 
 app.put("/api/profile", requireAuth, async (req, res) => {
@@ -970,7 +1202,7 @@ app.get("/api/admin/overview", requireAdmin, async (req, res) => {
   try {
     const [users, pending, surveys, providers] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int AS count FROM users`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved')`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved','processing')`),
       pool.query(`SELECT COUNT(*)::int AS count FROM survey_activity WHERE status='completed'`),
       pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`)
     ]);
@@ -984,7 +1216,7 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 });
 
 app.get("/api/admin/withdrawals", requireAdmin, async (req, res) => {
-  try { const r = await pool.query(`SELECT w.id,w.amount,w.method,w.details,w.status,w.admin_note,w.created_at,w.processed_at,u.full_name,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC LIMIT 500`); res.json({ withdrawals: r.rows }); }
+  try { const r = await pool.query(`SELECT w.id,w.amount,w.method,w.details,w.status,w.admin_note,w.provider_reference,w.payout_error,w.created_at,w.processed_at,u.full_name,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC LIMIT 500`); res.json({ withdrawals: r.rows }); }
   catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
 });
 
@@ -1001,7 +1233,7 @@ app.post("/api/admin/withdrawals/:id/process", requireAdmin, async (req, res) =>
     if (w.status === 'paid' || w.status === 'rejected') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal is already finalized." }); }
     if (status === 'approved' && w.status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: "Only pending withdrawals can be approved." }); }
     if (status === 'rejected' && w.status !== 'pending' && w.status !== 'approved') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal cannot be rejected in its current state." }); }
-    if (status === 'paid' && w.status !== 'approved') { await client.query('ROLLBACK'); return res.status(400).json({ error: "A withdrawal must be approved before it can be marked paid." }); }
+    if (status === 'paid' && !['approved','processing'].includes(w.status)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "A withdrawal must be approved before it can be marked paid." }); }
     if (status === 'paid') {
       const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
       if (Number(user.rows[0].balance) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "User no longer has enough balance to pay this withdrawal." }); }
