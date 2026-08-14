@@ -5,6 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Dashboard — LilianTech</title>
   <link rel="stylesheet" href="/styles.css">
+  <style>
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:30px 0}
+    .stat{padding:22px}.stat-value{font-size:30px;font-weight:800;margin-top:6px}
+    .survey-actions{display:flex;gap:10px;align-items:center}
+    .status{display:inline-flex;align-items:center;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:800}
+    .status.available{background:#eef2ff;color:#5146a5}.status.progress{background:#fff7ed;color:#9a3412}.status.completed{background:#ecfdf3;color:#166534}
+    .history-item{display:flex;justify-content:space-between;gap:18px;padding:16px 0;border-bottom:1px solid #eee}
+    .history-item:last-child{border-bottom:0}
+    .button.small{padding:9px 13px;font-size:14px;border:0;cursor:pointer}
+    .button.small:disabled{opacity:.6;cursor:not-allowed}
+    .notice{padding:14px 16px;border-radius:12px;background:#f8fafc;margin-top:16px}
+    @media(max-width:800px){.stats{grid-template-columns:repeat(2,1fr)}.history-item{flex-direction:column}.survey-actions{align-items:flex-start;flex-direction:column}}
+    @media(max-width:520px){.stats{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
   <header>
@@ -12,7 +26,8 @@
       <a class="brand" href="/">Lilian<span>Tech</span></a>
       <nav>
         <a href="/">Home</a>
-        <a href="/dashboard.html#surveys">Surveys</a>
+        <a href="#surveys">Surveys</a>
+        <a href="#history">History</a>
         <button id="logoutBtn" class="button secondary" type="button">Log out</button>
       </nav>
     </div>
@@ -30,15 +45,33 @@
           <div>
             <div class="eyebrow">MEMBER DASHBOARD</div>
             <h1>Welcome, <span id="name"></span>.</h1>
-            <p class="muted">Your LilianTech account is securely signed in.</p>
+            <p class="muted">Find surveys, track progress, and monitor your LilianTech rewards.</p>
           </div>
-
           <div class="card preview">
-            <div class="muted">Available balance</div>
+            <div class="muted">Current balance</div>
             <div id="balance" class="balance">$0.00</div>
-            <p class="muted">Your rewards will appear here as they become available.</p>
+            <div class="muted">Available rewards in your account</div>
           </div>
         </div>
+
+        <div class="stats">
+          <div class="card stat"><div class="muted">Available surveys</div><div id="availableCount" class="stat-value">0</div></div>
+          <div class="card stat"><div class="muted">In progress</div><div id="progressCount" class="stat-value">0</div></div>
+          <div class="card stat"><div class="muted">Completed</div><div id="completedCount" class="stat-value">0</div></div>
+          <div class="card stat"><div class="muted">Survey earnings</div><div id="earnings" class="stat-value">$0.00</div></div>
+        </div>
+
+        <section id="surveys" class="section">
+          <h2>Available surveys</h2>
+          <p class="muted">Start a survey when you're ready. Its status will be saved to your account.</p>
+          <div id="surveysList" class="survey-list"></div>
+          <div id="surveyNotice" class="notice" hidden></div>
+        </section>
+
+        <section id="history" class="section">
+          <h2>Survey history</h2>
+          <div id="historyList" class="card feature"></div>
+        </section>
 
         <section class="section">
           <h2>Your account</h2>
@@ -48,12 +81,6 @@
             <p><strong>Member since:</strong> <span id="created"></span></p>
           </div>
         </section>
-
-        <section class="section">
-          <h2>Available surveys</h2>
-          <p class="muted">Choose a research opportunity when you're ready.</p>
-          <div id="surveys" class="survey-list"></div>
-        </section>
       </div>
     </div>
   </main>
@@ -62,35 +89,82 @@
     const loading = document.getElementById("loading");
     const dashboard = document.getElementById("dashboard");
     const logoutBtn = document.getElementById("logoutBtn");
+    const notice = document.getElementById("surveyNotice");
 
-    function money(value) {
-      return Number(value || 0).toLocaleString("en-US", {
-        style: "currency",
-        currency: "USD"
-      });
+    const money = (value) => Number(value || 0).toLocaleString("en-US", {
+      style: "currency", currency: "USD"
+    });
+
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+      "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;"
+    }[char]));
+
+    function statusFor(surveyId, activity) {
+      const item = activity.find((x) => x.survey_id === surveyId);
+      return item ? item.status : "available";
     }
 
-    function surveyCard(x) {
+    function surveyCard(survey, activity) {
+      const status = statusFor(survey.id, activity);
+      let action = "";
+
+      if (status === "available") {
+        action = `<button class="button primary small" data-action="start" data-id="${escapeHtml(survey.id)}">Start survey</button>`;
+      } else if (status === "in_progress") {
+        action = `<button class="button primary small" data-action="complete" data-id="${escapeHtml(survey.id)}">Mark completed</button>`;
+      } else {
+        action = `<span class="status completed">Completed</span>`;
+      }
+
+      const statusLabel = status === "available" ? "Available" :
+        status === "in_progress" ? "In Progress" : "Completed";
+
       return `<div class="survey card">
         <div>
-          <strong>${x.title}</strong>
-          <div class="muted">${x.minutes} min • ${x.provider}</div>
+          <strong>${escapeHtml(survey.title)}</strong>
+          <div class="muted">${escapeHtml(survey.minutes)} min • ${escapeHtml(survey.provider)} • <strong>${escapeHtml(survey.reward)}</strong></div>
+          <span class="status ${status === "available" ? "available" : status === "in_progress" ? "progress" : "completed"}">${statusLabel}</span>
         </div>
-        <strong class="reward">${x.reward}</strong>
+        <div class="survey-actions">${action}</div>
       </div>`;
+    }
+
+    function renderHistory(activity) {
+      const el = document.getElementById("historyList");
+      if (!activity.length) {
+        el.innerHTML = '<p class="muted">You have not started any surveys yet.</p>';
+        return;
+      }
+
+      el.innerHTML = activity.map((item) => `
+        <div class="history-item">
+          <div>
+            <strong>${escapeHtml(item.title)}</strong>
+            <div class="muted">${item.status === "completed" && item.completed_at
+              ? "Completed " + new Date(item.completed_at).toLocaleDateString()
+              : "Started " + new Date(item.started_at).toLocaleDateString()}</div>
+          </div>
+          <div>
+            <strong class="reward">${item.status === "completed" ? "+" : ""}${money(item.reward)}</strong>
+          </div>
+        </div>
+      `).join("");
     }
 
     async function loadDashboard() {
       try {
-        const response = await fetch("/api/me", {
+        const response = await fetch("/api/dashboard", {
           credentials: "include",
-          cache: "no-store"
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" }
         });
 
-        if (!response.ok) {
+        if (response.status === 401) {
           window.location.replace("/login.html");
           return;
         }
+
+        if (!response.ok) throw new Error("Dashboard request failed");
 
         const data = await response.json();
         const user = data.user;
@@ -101,9 +175,17 @@
         document.getElementById("balance").textContent = money(user.balance);
         document.getElementById("created").textContent = new Date(user.created_at).toLocaleDateString();
 
+        document.getElementById("availableCount").textContent = data.stats.available;
+        document.getElementById("progressCount").textContent = data.stats.inProgress;
+        document.getElementById("completedCount").textContent = data.stats.completed;
+        document.getElementById("earnings").textContent = money(data.stats.completedEarnings);
+
         const surveysResponse = await fetch("/api/surveys", { cache: "no-store" });
         const surveys = await surveysResponse.json();
-        document.getElementById("surveys").innerHTML = surveys.map(surveyCard).join("");
+        document.getElementById("surveysList").innerHTML =
+          surveys.map((survey) => surveyCard(survey, data.activity)).join("");
+
+        renderHistory(data.activity);
 
         loading.hidden = true;
         dashboard.hidden = false;
@@ -111,10 +193,44 @@
         console.error(error);
         loading.innerHTML = `
           <h1>Unable to load your dashboard</h1>
-          <p class="muted">Please refresh the page. If the problem continues, check your Render deployment.</p>
+          <p class="muted">Please refresh the page. If the problem continues, check your deployment.</p>
         `;
       }
     }
+
+    document.getElementById("surveysList").addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+
+      button.disabled = true;
+      notice.hidden = true;
+
+      const action = button.dataset.action;
+      const surveyId = button.dataset.id;
+
+      try {
+        const response = await fetch(`/api/surveys/${encodeURIComponent(surveyId)}/${action}`, {
+          method: "POST",
+          credentials: "include",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" }
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Unable to update survey.");
+        }
+
+        notice.textContent = data.message || "Survey updated.";
+        notice.hidden = false;
+        await loadDashboard();
+      } catch (error) {
+        notice.textContent = error.message;
+        notice.hidden = false;
+        button.disabled = false;
+      }
+    });
 
     logoutBtn.addEventListener("click", async () => {
       logoutBtn.disabled = true;
