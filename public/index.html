@@ -1,8 +1,63 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LilianTech — Surveys & Rewards</title><link rel="stylesheet" href="/styles.css"><style>
-.hero{padding:92px 0 78px;background:radial-gradient(circle at 80% 20%,#e9e5ff 0,transparent 35%),linear-gradient(135deg,#f8f7ff,#fff 55%,#eef8ff)}.hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:58px;align-items:center}.hero h1{max-width:720px;font-size:clamp(46px,6.5vw,76px)}.hero p{max-width:650px}.trust-row{display:flex;flex-wrap:wrap;gap:16px;margin-top:25px;color:#667085;font-size:14px}.wallet-preview{position:relative;padding:26px;overflow:hidden}.wallet-preview:after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;background:#6d5dfc12;right:-55px;top:-55px}.wallet-top{display:flex;justify-content:space-between;align-items:center}.wallet-balance{font-size:50px;font-weight:900;letter-spacing:-2px;margin:15px 0}.wallet-line{display:flex;justify-content:space-between;padding:13px 0;border-top:1px solid #eef0f5}.badge{display:inline-flex;padding:7px 10px;border-radius:999px;background:#ecfdf3;color:#166534;font-weight:750;font-size:12px}.stat-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:20px}.stat-strip .card{padding:18px}.section{padding:76px 0}.feature-icon{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;background:#f1efff;color:#5b50d6;font-weight:900}.cta{background:#17152b;color:#fff;border-radius:24px;padding:44px}.cta .muted{color:#d5d2e3}.how-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.fine{font-size:12px;color:#7b8190}@media(max-width:850px){.hero-grid,.how-grid{grid-template-columns:1fr}.hero{padding-top:55px}.stat-strip{grid-template-columns:1fr 1fr}}@media(max-width:560px){.hero h1{font-size:43px}.wallet-balance{font-size:40px}.stat-strip{grid-template-columns:1fr}.cta{padding:28px}}
-</style></head><body>
-<header><div class="container nav"><a class="brand" href="/">Lilian<span>Tech</span></a><nav id="nav"><a href="#how">How it works</a><a href="#trust">Why LilianTech</a><a id="loginLink" href="/login.html">Log in</a><a id="startLink" class="button primary" href="/register.html">Get started</a></nav></div></header>
-<main><section class="hero"><div class="container hero-grid"><div><div class="eyebrow">SURVEYS • REWARDS • FLEXIBLE EARNINGS</div><h1>Earn from surveys. Get paid for your time.</h1><p>Find paid surveys, build your balance and cash out through the payout method that works for you.</p><div class="actions"><a class="button primary" href="/register.html">Start earning</a><a class="button secondary" href="#how">How it works</a></div><div class="trust-row"><span>✓ Free to join</span><span>✓ Simple dashboard</span><span>✓ Flexible payouts</span></div></div><div><div class="card wallet-preview"><div class="wallet-top"><div><div class="muted">Your LilianTech wallet</div><strong>Ready when you are</strong></div><span class="badge">Member wallet</span></div><div class="wallet-balance">$1,024.80</div><div class="wallet-line"><span class="muted">Survey rewards</span><strong>$1,184.80</strong></div><div class="wallet-line"><span class="muted">Withdrawn</span><strong>-$160.00</strong></div><div class="wallet-line"><span class="muted">Available</span><strong>$1,024.80</strong></div></div><div class="stat-strip"><div class="card"><div class="muted">Survey partners</div><strong>Growing</strong></div><div class="card"><div class="muted">Payout tracking</div><strong>Clear</strong></div><div class="card"><div class="muted">Member access</div><strong>24/7</strong></div></div></div></div></section>
-<section id="how" class="section"><div class="container"><div class="eyebrow">HOW IT WORKS</div><h2>A simple way to turn spare time into extra income.</h2><div class="how-grid"><div class="card feature"><div class="feature-icon">1</div><h3>Create your account</h3><p class="muted">Create your account in a few minutes and tell us a little about yourself.</p></div><div class="card feature"><div class="feature-icon">2</div><h3>Complete available surveys</h3><p class="muted">Pick a survey, share your opinion and watch your balance grow.</p></div><div class="card feature"><div class="feature-icon">3</div><h3>Request your earnings</h3><p class="muted">When you are ready, choose your payout method and request your money.</p></div></div></div></section>
-<section id="trust" class="section"><div class="container"><div class="card cta"><div class="eyebrow" style="color:#b9b2ff">BUILT AROUND TRUST</div><h2>Ready to get started?</h2><p class="muted">Join LilianTech, find your first survey and start building your balance.</p><div class="actions"><a class="button primary" href="/register.html">Join LilianTech</a><a class="button secondary" href="/login.html">Member login</a></div></div></div></section></main>
-<footer><div class="container">© 2026 LilianTech · Survey and rewards platform</div></footer><script>(async function(){try{const r=await fetch('/api/me',{credentials:'include',cache:'no-store'});if(!r.ok)return;const d=await r.json();if(!d.authenticated)return;document.getElementById('loginLink').textContent='Dashboard';document.getElementById('loginLink').href='/dashboard.html';document.getElementById('startLink').textContent='Dashboard';document.getElementById('startLink').href='/dashboard.html'}catch(e){console.error(e)}})();</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LilianTech — Earn from paid surveys</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav id="nav" aria-label="Main navigation">
+      <a href="#how">How it works</a><a href="#payouts">Payouts</a><a id="loginLink" href="/login.html">Log in</a><a id="startLink" class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" id="mobileMenu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div id="mobileNav" class="mobile-nav" hidden><a href="#how">How it works</a><a href="#payouts">Payouts</a><a id="mobileLogin" href="/login.html">Log in</a><a id="mobileStart" class="button primary" href="/register.html">Get started</a></div>
+</header>
+<main>
+<section class="hero home-hero">
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <div class="eyebrow">PAID SURVEYS · REAL REWARDS</div>
+      <h1>Your opinions are worth something.</h1>
+      <p>Answer surveys that fit you, build your balance and cash out when you're ready.</p>
+      <div class="actions"><a class="button primary button-lg" href="/register.html">Create free account</a><a class="text-link" href="#how">See how it works <span>→</span></a></div>
+      <div class="hero-points"><span>Free to join</span><span>Flexible payouts</span><span>Built for members worldwide</span></div>
+    </div>
+    <div class="wallet-stage" aria-label="LilianTech wallet preview">
+      <div class="wallet-card card">
+        <div class="wallet-head"><div><span class="wallet-label">LilianTech wallet</span><strong>Available balance</strong></div><span class="live-dot">Live</span></div>
+        <div class="wallet-amount">$1,024.80</div>
+        <div class="wallet-meta"><span>Rewards earned</span><strong>$1,184.80</strong></div>
+        <div class="wallet-meta"><span>Withdrawals</span><strong>−$160.00</strong></div>
+        <div class="wallet-footer"><span>Ready to withdraw</span><span>View wallet →</span></div>
+      </div>
+      <div class="float-card float-one"><span class="float-icon">✓</span><div><strong>Survey completed</strong><small>+ $12.50</small></div></div>
+      <div class="float-card float-two"><span class="float-icon">↗</span><div><strong>Withdrawal sent</strong><small>$85.00</small></div></div>
+    </div>
+  </div>
+</section>
+<section id="how" class="section home-section">
+  <div class="container"><div class="section-heading"><div class="eyebrow">HOW IT WORKS</div><h2>Simple from your first survey to your first payout.</h2></div>
+    <div class="how-grid">
+      <article class="card step"><span class="step-number">01</span><h3>Join</h3><p>Set up your free account and tell us what fits you.</p></article>
+      <article class="card step"><span class="step-number">02</span><h3>Answer</h3><p>Choose available surveys and share your honest opinion.</p></article>
+      <article class="card step"><span class="step-number">03</span><h3>Get paid</h3><p>Build your balance and choose a payout method when you're ready.</p></article>
+    </div>
+  </div>
+</section>
+<section id="payouts" class="section payout-section">
+  <div class="container payout-layout"><div><div class="eyebrow">PAYOUTS</div><h2>Keep your earnings within reach.</h2><p>Choose the payout option that suits you. Your available methods and processing time are shown in your account.</p></div>
+  <div class="payout-pills"><span>PayPal</span><span>Wise</span><span>Payoneer</span><span>Bank transfer</span></div></div>
+</section>
+<section class="section final-cta"><div class="container"><div class="cta"><div><div class="eyebrow">READY?</div><h2>Start with your first survey.</h2><p>Create your account and see what's available for you.</p></div><a class="button light button-lg" href="/register.html">Get started <span>→</span></a></div></div></section>
+</main>
+<footer><div class="container footer-inner"><span>© 2026 LilianTech</span><div><a href="#how">How it works</a><a href="/login.html">Log in</a></div></div></footer>
+<script>
+(function(){const menu=document.getElementById('mobileMenu'),mobile=document.getElementById('mobileNav');menu?.addEventListener('click',()=>{const open=menu.getAttribute('aria-expanded')==='true';menu.setAttribute('aria-expanded',String(!open));mobile.hidden=open});mobile?.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{mobile.hidden=true;menu.setAttribute('aria-expanded','false')}));
+try{const r=fetch('/api/me',{credentials:'include',cache:'no-store'}).then(x=>x.ok?x.json():null).then(d=>{if(!d?.authenticated)return;[['loginLink','Dashboard'],['startLink','Dashboard'],['mobileLogin','Dashboard'],['mobileStart','Dashboard']].forEach(([id,text])=>{const el=document.getElementById(id);if(el){el.textContent=text;el.href='/dashboard.html'}})});r.catch(()=>{});}catch(e){}
+})();
+</script>
+</body></html>
