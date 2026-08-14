@@ -30,24 +30,6 @@ services:
         sync: false
       - key: DYNATA_SECRET_KEY
         sync: false
-      - key: MPESA_ENV
-        value: "sandbox"
-      - key: MPESA_CONSUMER_KEY
-        sync: false
-      - key: MPESA_CONSUMER_SECRET
-        sync: false
-      - key: MPESA_SHORTCODE
-        sync: false
-      - key: MPESA_INITIATOR_NAME
-        sync: false
-      - key: MPESA_SECURITY_CREDENTIAL
-        sync: false
-      - key: MPESA_RESULT_URL
-        sync: false
-      - key: MPESA_TIMEOUT_URL
-        sync: false
-      - key: USD_TO_KES
-        value: "130"
       - key: PAYPAL_ENV
         value: "sandbox"
       - key: PAYPAL_CLIENT_ID

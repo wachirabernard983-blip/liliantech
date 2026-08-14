@@ -66,20 +66,8 @@ Before going live, verify HTTPS, PostgreSQL, session persistence, email delivery
 
 Version 2 adds a real withdrawal workflow with method-specific fields. Automatic payout is credential-gated: without provider credentials, a withdrawal is safely queued instead of pretending it was paid.
 
-### M-Pesa automatic payouts
-Configure these Render environment variables only after you have a Safaricom Daraja business-to-customer setup:
 
-- `MPESA_ENV` = `sandbox` for testing, then `live` for production
-- `MPESA_CONSUMER_KEY`
-- `MPESA_CONSUMER_SECRET`
-- `MPESA_SHORTCODE`
-- `MPESA_INITIATOR_NAME`
-- `MPESA_SECURITY_CREDENTIAL`
-- `MPESA_RESULT_URL` = `https://liliantech.online/api/payouts/mpesa/result`
-- `MPESA_TIMEOUT_URL` = `https://liliantech.online/api/payouts/mpesa/timeout`
-- `USD_TO_KES` = your controlled conversion rate
 
-Safaricom's official Daraja portal provides the M-Pesa APIs and B2C documentation.
 
 ### PayPal automatic payouts
 Configure only after creating an appropriate PayPal developer/business payout setup:

@@ -1,6 +1,5 @@
 # LilianTech Version 3
 
-- Added M-Pesa, PayPal, Wise, Payoneer and Bank Transfer withdrawal choices.
 - Added payout-detail forms for each method.
 - Added payout method readiness/speed display.
 - Kept provider credentials server-side.

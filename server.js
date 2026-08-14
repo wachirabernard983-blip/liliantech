@@ -953,7 +953,6 @@ app.all('/api/providers/bitlabs/callback', async (req, res) => {
 
 // ---------- Payout providers ----------
 function payoutMode(method) {
-  if (method === 'M-Pesa') return process.env.MPESA_CONSUMER_KEY && process.env.MPESA_CONSUMER_SECRET && process.env.MPESA_SHORTCODE && process.env.MPESA_SECURITY_CREDENTIAL && process.env.MPESA_RESULT_URL ? 'automatic' : 'manual';
   if (method === 'PayPal') return process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET && process.env.PAYPAL_SENDER_EMAIL ? 'automatic' : 'manual';
   if (method === 'Wise') return process.env.WISE_API_TOKEN ? 'automatic' : 'manual';
   if (method === 'Payoneer') return process.env.PAYONEER_API_TOKEN ? 'automatic' : 'manual';
@@ -962,72 +961,32 @@ function payoutMode(method) {
 
 function getWithdrawalMethods() {
   return [
-    { id: 'M-Pesa', label: 'M-Pesa', currency: 'KES', mode: payoutMode('M-Pesa'), speed: 'Fast', fields: [
-      { name: 'phone', label: 'M-Pesa phone number', type: 'tel', placeholder: '2547XXXXXXXX', required: true }
-    ]},
     { id: 'PayPal', label: 'PayPal', currency: 'USD', mode: payoutMode('PayPal'), speed: 'Fast', fields: [
       { name: 'email', label: 'PayPal email', type: 'email', placeholder: 'you@example.com', required: true }
     ]},
     { id: 'Wise', label: 'Wise', currency: 'USD', mode: payoutMode('Wise'), speed: 'Fast', fields: [
       { name: 'fullName', label: 'Name on Wise account', type: 'text', placeholder: 'Full name', required: true },
       { name: 'email', label: 'Wise account email', type: 'email', placeholder: 'you@example.com', required: true },
-      { name: 'recipientId', label: 'Wise recipient/profile ID (if available)', type: 'text', placeholder: 'Optional', required: false }
+      { name: 'recipientId', label: 'Wise recipient or profile ID', type: 'text', placeholder: 'Optional', required: false }
     ]},
     { id: 'Payoneer', label: 'Payoneer', currency: 'USD', mode: payoutMode('Payoneer'), speed: 'Fast', fields: [
       { name: 'fullName', label: 'Name on Payoneer account', type: 'text', placeholder: 'Full name', required: true },
       { name: 'email', label: 'Payoneer account email', type: 'email', placeholder: 'you@example.com', required: true },
-      { name: 'customerId', label: 'Payoneer customer ID (if available)', type: 'text', placeholder: 'Optional', required: false }
+      { name: 'customerId', label: 'Payoneer customer ID', type: 'text', placeholder: 'Optional', required: false }
     ]},
     { id: 'Bank transfer', label: 'Bank transfer', currency: 'USD', mode: payoutMode('Bank transfer'), speed: 'Bank processing', fields: [
       { name: 'accountName', label: 'Account holder name', type: 'text', placeholder: 'Full name', required: true },
-      { name: 'bankName', label: 'Bank name', type: 'text', placeholder: 'e.g. KCB, Equity, Co-op', required: true },
-      { name: 'accountNumber', label: 'Account number', type: 'text', placeholder: 'Account number', required: true },
-      { name: 'branch', label: 'Branch / SWIFT (if applicable)', type: 'text', placeholder: 'Optional', required: false }
+      { name: 'country', label: 'Bank country or region', type: 'text', placeholder: 'Country or region', required: true },
+      { name: 'bankName', label: 'Bank name', type: 'text', placeholder: 'Bank name', required: true },
+      { name: 'accountNumber', label: 'Account number / IBAN', type: 'text', placeholder: 'Account number or IBAN', required: true },
+      { name: 'swift', label: 'SWIFT / BIC', type: 'text', placeholder: 'SWIFT or BIC', required: false },
+      { name: 'currency', label: 'Payout currency', type: 'text', placeholder: 'e.g. USD, EUR, GBP', required: true }
     ]}
   ];
 }
 
 function parseDetails(details) {
   try { return JSON.parse(details); } catch { return { value: details }; }
-}
-
-async function mpesaAccessToken() {
-  const base = String(process.env.MPESA_ENV || 'sandbox').toLowerCase() === 'live'
-    ? 'https://api.safaricom.co.ke' : 'https://sandbox.safaricom.co.ke';
-  const auth = Buffer.from(`${process.env.MPESA_CONSUMER_KEY}:${process.env.MPESA_CONSUMER_SECRET}`).toString('base64');
-  const r = await fetch(`${base}/oauth/v1/generate?grant_type=client_credentials`, {
-    headers: { Authorization: `Basic ${auth}` }, signal: AbortSignal.timeout(10000)
-  });
-  if (!r.ok) throw new Error(`M-Pesa authentication failed (${r.status})`);
-  const d = await r.json();
-  return { base, token: d.access_token };
-}
-
-async function sendMpesaPayout(amountUsd, details, withdrawalId) {
-  const { base, token } = await mpesaAccessToken();
-  const phone = String(details.phone || '').replace(/\D/g, '');
-  if (!/^2547\d{8}$/.test(phone)) throw new Error('Enter a valid Kenyan M-Pesa number in 2547XXXXXXXX format.');
-  const usdToKes = Number(process.env.USD_TO_KES || 130);
-  const amountKes = Math.max(1, Math.round(Number(amountUsd) * usdToKes));
-  const payload = {
-    InitiatorName: process.env.MPESA_INITIATOR_NAME,
-    SecurityCredential: process.env.MPESA_SECURITY_CREDENTIAL,
-    CommandID: process.env.MPESA_COMMAND_ID || 'BusinessPayment',
-    Amount: amountKes,
-    PartyA: process.env.MPESA_SHORTCODE,
-    PartyB: phone,
-    Remarks: `LilianTech withdrawal ${withdrawalId}`,
-    QueueTimeOutURL: process.env.MPESA_TIMEOUT_URL || process.env.MPESA_RESULT_URL,
-    ResultURL: process.env.MPESA_RESULT_URL,
-    Occasion: `LT-${withdrawalId}`
-  };
-  const r = await fetch(`${base}/mpesa/b2c/v3/paymentrequest`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload), signal: AbortSignal.timeout(15000)
-  });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok || d.ResponseCode && String(d.ResponseCode) !== '0') throw new Error(d.errorMessage || d.ResponseDescription || 'M-Pesa payout request failed.');
-  return d.OriginatorConversationID || d.ConversationID || d.TransactionID || `MPESA-${withdrawalId}`;
 }
 
 async function paypalAccessToken() {
@@ -1066,7 +1025,6 @@ async function sendPaypalPayout(amountUsd, details, withdrawalId) {
 }
 
 async function executeAutomaticPayout(method, amount, details, withdrawalId) {
-  if (method === 'M-Pesa') return await sendMpesaPayout(amount, details, withdrawalId);
   if (method === 'PayPal') return await sendPaypalPayout(amount, details, withdrawalId);
   if (method === 'Wise') throw new Error('Wise payout integration is not enabled yet.');
   if (method === 'Payoneer') throw new Error('Payoneer payout integration is not enabled yet.');
@@ -1075,47 +1033,6 @@ async function executeAutomaticPayout(method, amount, details, withdrawalId) {
 
 
 
-// Safaricom B2C result callback. Only a provider-confirmed ResultCode=0 can
-// finalize an M-Pesa payout and create the corresponding ledger debit.
-app.post('/api/payouts/mpesa/result', async (req, res) => {
-  try {
-    const result = req.body?.Result || req.body || {};
-    const code = Number(result.ResultCode ?? result.Result?.ResultCode);
-    const conversationId = String(result.OriginatorConversationID || result.ConversationID || '').trim();
-    const refText = String(result.ResultDesc || '');
-    if (!conversationId) return res.status(400).send('missing conversation');
-    const r = await pool.query(`SELECT * FROM withdrawals WHERE provider_reference=$1 FOR UPDATE`, [conversationId]);
-    if (!r.rows[0]) return res.status(404).send('withdrawal not found');
-    const w = r.rows[0];
-    if (w.status === 'paid') return res.status(200).send('ok');
-    if (code !== 0) {
-      await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1, processed_at=NOW() WHERE id=$2`, [refText.slice(0,500) || 'M-Pesa payout failed.', w.id]);
-      return res.status(200).send('ok');
-    }
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const locked = await client.query(`SELECT * FROM withdrawals WHERE id=$1 FOR UPDATE`, [w.id]);
-      if (locked.rows[0].status === 'paid') { await client.query('COMMIT'); return res.status(200).send('ok'); }
-      const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
-      if (Number(user.rows[0]?.balance || 0) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(409).send('insufficient balance'); }
-      await client.query(`UPDATE users SET balance=balance-$1 WHERE id=$2`, [w.amount,w.user_id]);
-      await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'withdrawal',$2,$3,$4)`, [w.user_id,-Number(w.amount),`Withdrawal paid via M-Pesa`,String(w.id)]);
-      await client.query(`UPDATE withdrawals SET status='paid', processed_at=NOW(), payout_error=NULL WHERE id=$1`, [w.id]);
-      await client.query('COMMIT');
-      return res.status(200).send('ok');
-    } catch(e) { await client.query('ROLLBACK').catch(()=>{}); throw e; } finally { client.release(); }
-  } catch(e) { console.error('M-Pesa result callback:',e); return res.status(500).send('error'); }
-});
-
-app.post('/api/payouts/mpesa/timeout', async (req,res) => {
-  try {
-    const result=req.body?.Result||req.body||{};
-    const ref=String(result.OriginatorConversationID||result.ConversationID||'').trim();
-    if(ref) await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1 WHERE provider_reference=$2 AND status='processing'`, ['M-Pesa payout timed out; please retry or review.',ref]);
-    return res.status(200).send('ok');
-  } catch(e) { console.error('M-Pesa timeout callback:',e); return res.status(500).send('error'); }
-});
 
 // ---------- Earnings, withdrawals, profile and administration ----------
 app.get("/api/earnings", requireAuth, async (req, res) => {
