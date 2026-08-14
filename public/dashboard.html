@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard — LilianTech</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <a class="brand" href="/">Lilian<span>Tech</span></a>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/#surveys">Surveys</a>
+        <button id="logoutBtn" class="button secondary" type="button">Log out</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="section">
+    <div class="container">
+      <div id="loading" class="card feature">
+        <h1>Loading your dashboard…</h1>
+        <p class="muted">Checking your secure login session.</p>
+      </div>
+
+      <div id="dashboard" hidden>
+        <div class="hero-grid">
+          <div>
+            <div class="eyebrow">MEMBER DASHBOARD</div>
+            <h1>Welcome, <span id="name"></span>.</h1>
+            <p class="muted">Your LilianTech account is securely signed in.</p>
+          </div>
+
+          <div class="card preview">
+            <div class="muted">Available balance</div>
+            <div id="balance" class="balance">$0.00</div>
+            <p class="muted">Your rewards will appear here as they become available.</p>
+          </div>
+        </div>
+
+        <section class="section">
+          <h2>Your account</h2>
+          <div class="card feature">
+            <p><strong>Name:</strong> <span id="accountName"></span></p>
+            <p><strong>Email:</strong> <span id="email"></span></p>
+            <p><strong>Member since:</strong> <span id="created"></span></p>
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>Available surveys</h2>
+          <p class="muted">Choose a research opportunity when you're ready.</p>
+          <div id="surveys" class="survey-list"></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const loading = document.getElementById("loading");
+    const dashboard = document.getElementById("dashboard");
+    const logoutBtn = document.getElementById("logoutBtn");
+
+    function money(value) {
+      return Number(value || 0).toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD"
+      });
+    }
+
+    function surveyCard(x) {
+      return `<div class="survey card">
+        <div>
+          <strong>${x.title}</strong>
+          <div class="muted">${x.minutes} min • ${x.provider}</div>
+        </div>
+        <strong class="reward">${x.reward}</strong>
+      </div>`;
+    }
+
+    async function loadDashboard() {
+      try {
+        const response = await fetch("/api/me", {
+          credentials: "same-origin",
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          window.location.replace("/login.html");
+          return;
+        }
+
+        const data = await response.json();
+        const user = data.user;
+
+        document.getElementById("name").textContent = user.full_name;
+        document.getElementById("accountName").textContent = user.full_name;
+        document.getElementById("email").textContent = user.email;
+        document.getElementById("balance").textContent = money(user.balance);
+        document.getElementById("created").textContent = new Date(user.created_at).toLocaleDateString();
+
+        const surveysResponse = await fetch("/api/surveys", { cache: "no-store" });
+        const surveys = await surveysResponse.json();
+        document.getElementById("surveys").innerHTML = surveys.map(surveyCard).join("");
+
+        loading.hidden = true;
+        dashboard.hidden = false;
+      } catch (error) {
+        console.error(error);
+        loading.innerHTML = `
+          <h1>Unable to load your dashboard</h1>
+          <p class="muted">Please refresh the page. If the problem continues, check your Render deployment.</p>
+        `;
+      }
+    }
+
+    logoutBtn.addEventListener("click", async () => {
+      logoutBtn.disabled = true;
+      try {
+        await fetch("/api/logout", {
+          method: "POST",
+          credentials: "same-origin"
+        });
+      } finally {
+        window.location.replace("/");
+      }
+    });
+
+    loadDashboard();
+  </script>
+</body>
+</html>
