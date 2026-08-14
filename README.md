@@ -38,3 +38,11 @@ Set:
 The included `render.yaml` is configured for a Node web service. After deployment, attach your custom domain in the hosting provider and point the domain's DNS records to the host as instructed by that provider.
 
 Before going live, verify HTTPS, PostgreSQL, session persistence, email delivery, provider approval/credentials, payout provider compliance, privacy policy, terms, and applicable legal requirements.
+
+
+## Production requirements
+- Minimum withdrawal defaults to $25 and is configurable with `MIN_WITHDRAWAL`.
+- Admin access is restricted server-side to `ADMIN_NAME=Bernard Wachira` and `ADMIN_EMAIL=wachirabernard193@gmail.com`.
+- Live CPX/BitLabs surveys open in the LilianTech in-app survey player first; a new-tab fallback is provided if the provider blocks embedding.
+- Provider rewards are credited only from verified provider callbacks; demo/local surveys are not production reward sources.
+- Cint and Dynata remain credential-gated until their publisher approvals and credentials are supplied.

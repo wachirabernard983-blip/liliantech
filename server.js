@@ -147,11 +147,25 @@ async function initializeDatabase() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS provider_transactions (
+      id SERIAL PRIMARY KEY,
+      provider_id VARCHAR(80) NOT NULL,
+      transaction_id VARCHAR(180) NOT NULL,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      survey_id VARCHAR(160),
+      status VARCHAR(30) NOT NULL,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      raw_payload JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(provider_id, transaction_id)
+    );
+  `);
+
   // Optional deployment convenience: set ADMIN_EMAILS=email1,email2 in production.
-  const adminEmails = String(process.env.ADMIN_EMAILS || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
-  if (adminEmails.length) {
-    await pool.query(`UPDATE users SET role = 'admin' WHERE LOWER(email) = ANY($1::text[])`, [adminEmails]);
-  }
+  const adminEmail = String(process.env.ADMIN_EMAIL || 'wachirabernard193@gmail.com').trim().toLowerCase();
+  const adminName = String(process.env.ADMIN_NAME || 'Bernard Wachira').trim();
+  await pool.query(`UPDATE users SET role = CASE WHEN LOWER(email)=$1 AND full_name=$2 THEN 'admin' ELSE 'member' END`, [adminEmail, adminName]);
 
   console.log("Database initialized successfully.");
 }
@@ -198,15 +212,18 @@ function requireAuth(req, res, next) {
 }
 
 function getMinimumWithdrawal() {
-  const value = Number(process.env.MIN_WITHDRAWAL || 10);
-  return Number.isFinite(value) && value > 0 ? value : 10;
+  const value = Number(process.env.MIN_WITHDRAWAL || 25);
+  return Number.isFinite(value) && value > 0 ? value : 25;
 }
 
 function requireAdmin(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: "Authentication required." });
-  pool.query('SELECT role FROM users WHERE id = $1', [req.session.userId])
+  pool.query('SELECT full_name, email, role FROM users WHERE id = $1', [req.session.userId])
     .then(result => {
-      if (!result.rows[0] || result.rows[0].role !== 'admin') return res.status(403).json({ error: "Administrator access required." });
+      const u = result.rows[0];
+      const adminEmail = String(process.env.ADMIN_EMAIL || 'wachirabernard193@gmail.com').trim().toLowerCase();
+      const adminName = String(process.env.ADMIN_NAME || 'Bernard Wachira').trim();
+      if (!u || u.role !== 'admin' || u.full_name !== adminName || String(u.email).toLowerCase() !== adminEmail) return res.status(403).json({ error: "Administrator access required." });
       next();
     })
     .catch(() => res.status(500).json({ error: "Unable to verify administrator access." }));
@@ -263,10 +280,11 @@ app.get("/api/me", async (req, res) => {
   }
 });
 
-app.get("/api/surveys", async (req, res) => {
+app.get("/api/surveys", requireAuth, async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
-    res.json(await getAllSurveyInventory());
+    const user = await getUserById(req.session.userId);
+    res.json(await getAllSurveyInventory(user, req));
   } catch (error) {
     console.error("Survey inventory error:", error);
     res.status(500).json({ error: "Unable to load surveys." });
@@ -448,19 +466,64 @@ function getSurveyInventory() {
   return require(path.join(__dirname, "data", "surveys.json"));
 }
 
-async function getAllSurveyInventory() {
+async function getAllSurveyInventory(user = null, req = null) {
   const local = getSurveyInventory();
-  const provider = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country, status FROM provider_surveys WHERE status='active'`);
-  const imported = provider.rows.map(row => ({
-    id: `provider-${row.id}`,
-    title: row.title,
-    minutes: row.minutes,
-    reward: `$${Number(row.reward || 0).toFixed(2)}`,
-    provider: row.provider_id,
-    externalId: row.external_id,
-    country: row.country
+  const imported = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country, status FROM provider_surveys WHERE status='active'`);
+  const dbInventory = imported.rows.map(row => ({
+    id: `provider-${row.id}`, title: row.title, minutes: row.minutes,
+    reward: `$${Number(row.reward || 0).toFixed(2)}`, provider: row.provider_id,
+    externalId: row.external_id, country: row.country, source: 'imported'
   }));
-  return [...local, ...imported];
+  const live = user && req ? await getLiveProviderSurveys(user, req).catch(err => { console.error('Provider survey fetch:', err); return []; }) : [];
+  return [...local, ...dbInventory, ...live];
+}
+
+async function getLiveProviderSurveys(user, req) {
+  const surveys = [];
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().replace('::ffff:','');
+  const ua = String(req.headers['user-agent'] || '');
+
+  // CPX Research: user-based API. App ID is public; secure hash stays server-side.
+  const cpxAppId = process.env.CPX_APP_ID || '35372';
+  if (cpxAppId) {
+    const q = new URLSearchParams({
+      app_id: cpxAppId, ext_user_id: String(user.id), output_method: 'api',
+      ip_user: ip || '0.0.0.0', user_agent: ua, limit: '12'
+    });
+    if (process.env.CPX_SECURE_HASH) q.set('secure_hash', crypto.createHash('md5').update(`${user.id}-${process.env.CPX_SECURE_HASH}`).digest('hex'));
+    const r = await fetch(`https://live-api.cpx-research.com/api/get-surveys.php?${q}`);
+    if (r.ok) {
+      const data = await r.json();
+      if (data.status === 'success') {
+        for (const x of (data.surveys || [])) surveys.push({
+          id: `cpx-${x.id}`, externalId: String(x.id), title: `CPX Research survey`,
+          minutes: Number(x.loi || 0), reward: `$${Number(x.payout_publisher_usd ?? x.payout ?? 0).toFixed(2)}`,
+          provider: 'CPX Research', providerId: 'cpx', href: x.href_new || x.href,
+          source: 'live', live: true
+        });
+      }
+    }
+  }
+
+  // BitLabs: user-based Survey API. The token is never exposed to the browser.
+  if (process.env.BITLABS_API_TOKEN) {
+    const r = await fetch('https://api.bitlabs.ai/v2/client/surveys?platform=WEB&sdk=CUSTOM', {
+      headers: { 'X-Api-Token': process.env.BITLABS_API_TOKEN, accept: 'application/json' }
+    });
+    if (r.ok) {
+      const data = await r.json();
+      for (const x of (data.surveys || [])) surveys.push({
+        id: `bitlabs-${x.id || x.survey_id}`, externalId: String(x.id || x.survey_id),
+        title: x.title || 'BitLabs survey', minutes: Number(x.loi || x.length_of_interview || 0),
+        reward: `$${Number(x.reward || x.payout || 0).toFixed(2)}`, provider: 'BitLabs',
+        providerId: 'bitlabs', href: x.click_url || x.clickUrl, source: 'live', live: true
+      });
+    }
+  }
+
+  // Cint and Dynata are credential/signature based. The adapters are intentionally
+  // gated until approved credentials are supplied, so no fake inventory is shown.
+  return surveys.filter(x => x.href);
 }
 
 async function getSurveyById(surveyId) {
@@ -503,7 +566,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
     res.json({
       user,
       stats: {
-        available: (await getAllSurveyInventory()).filter(
+        available: (await getAllSurveyInventory(user, req)).filter(
           (survey) => !activity.rows.some((item) => item.survey_id === survey.id)
         ).length,
         inProgress: inProgress.length,
@@ -540,6 +603,14 @@ app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
     }
 
     const reward = Number(String(survey.reward).replace(/[^0-9.]/g, "")) || 0;
+
+    if (survey.live && survey.href) {
+      await pool.query(
+        `INSERT INTO survey_activity (user_id, survey_id, title, reward, status) VALUES ($1,$2,$3,$4,'in_progress')`,
+        [req.session.userId, survey.id, survey.title, reward]
+      );
+      return res.status(201).json({ message: "Survey opened. Completion is confirmed by the provider.", status: "in_progress", redirectUrl: survey.href, provider: survey.provider });
+    }
 
     await pool.query(
       `INSERT INTO survey_activity
@@ -589,6 +660,10 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
     }
 
     const reward = Number(activity.rows[0].reward || 0);
+    if (String(survey.id).startsWith('cpx-') || String(survey.id).startsWith('bitlabs-')) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Provider surveys are completed and credited by the provider callback." });
+    }
 
     await client.query(
       `UPDATE survey_activity
@@ -626,7 +701,7 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   }
 });
 
-// ---------- Earnings, withdrawals, profile and administration ----------
+// ---------- Provider callbacks ----------\n// CPX postback: credit only verified, idempotent transactions. Configure the exact\n// callback URL in CPX as https://liliantech.online/api/providers/cpx/postback.\napp.all('/api/providers/cpx/postback', async (req, res) => {\n  try {\n    const q = { ...req.query, ...req.body };\n    const status = String(q.status || '');\n    const transactionId = String(q.trans_id || q.transaction_id || '');\n    const userId = String(q.user_id || q.subid || '');\n    const amount = Number(q.amount_usd || q.amount_local || 0);\n    const secureHash = String(q.secure_hash || '');\n    if (!transactionId || !userId || !Number.isFinite(amount)) return res.status(400).send('invalid');\n    if (process.env.CPX_SECURE_HASH) {\n      const expected = crypto.createHash('md5').update(`${transactionId}-${process.env.CPX_SECURE_HASH}`).digest('hex');\n      if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) return res.status(403).send('invalid signature');\n    } else {\n      return res.status(503).send('CPX secure hash not configured');\n    }\n    const user = await pool.query('SELECT id FROM users WHERE id=$1', [Number(userId)]);\n    if (!user.rows[0]) return res.status(404).send('user not found');\n    const client = await pool.connect();\n    try {\n      await client.query('BEGIN');\n      const exists = await client.query('SELECT id,status FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE', ['cpx', transactionId]);\n      if (exists.rows[0]) { await client.query('COMMIT'); return res.status(200).send('ok'); }\n      await client.query(`INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`, ['cpx', transactionId, Number(userId), String(q.offer_id || q.survey_id || ''), status, amount, q]);\n      if (status === '1' && amount > 0) {\n        await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [amount, Number(userId)]);\n        await client.query(`UPDATE survey_activity SET status='completed', completed_at=NOW(), reward=$1 WHERE user_id=$2 AND survey_id=$3`, [amount, Number(userId), `cpx-${q.offer_id || q.survey_id || ''}`]);\n        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [Number(userId), amount, `CPX Research survey ${transactionId}`, transactionId]);\n      } else if (status === '2' && amount > 0) {\n        await client.query(`UPDATE users SET balance=GREATEST(0,balance-$1) WHERE id=$2`, [amount, Number(userId)]);\n        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [Number(userId), -amount, `CPX Research reversal ${transactionId}`, transactionId]);\n      }\n      await client.query('COMMIT');\n      res.status(200).send('ok');\n    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }\n  } catch (e) { console.error('CPX callback:', e); res.status(500).send('error'); }\n});\n\n// BitLabs callback endpoint. Configure the callback/signature fields from the\n// BitLabs publisher dashboard before enabling reward crediting.\napp.post('/api/providers/bitlabs/callback', express.json(), async (req, res) => {\n  // Kept intentionally non-crediting until the BitLabs callback secret/configuration\n  // supplied by BitLabs is installed. This prevents forged reward requests.\n  if (!process.env.BITLABS_API_TOKEN) return res.status(503).send('BitLabs not configured');\n  res.status(202).json({ received: true, message: 'Callback endpoint ready; configure BitLabs callback verification before crediting.' });\n});\n\n// ---------- Earnings, withdrawals, profile and administration ----------
 app.get("/api/earnings", requireAuth, async (req, res) => {
   try {
     const user = await getUserById(req.session.userId);

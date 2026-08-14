@@ -11,8 +11,22 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: MIN_WITHDRAWAL
-        value: "10"
-      - key: ADMIN_EMAILS
+        value: "25"
+      - key: ADMIN_EMAIL
+        value: "wachirabernard193@gmail.com"
+      - key: ADMIN_NAME
+        value: "Bernard Wachira"
+      - key: CPX_APP_ID
+        value: "35372"
+      - key: CPX_SECURE_HASH
+        sync: false
+      - key: BITLABS_API_TOKEN
+        sync: false
+      - key: CINT_JWT
+        sync: false
+      - key: DYNATA_ACCESS_KEY
+        sync: false
+      - key: DYNATA_SECRET_KEY
         sync: false
       - key: DATABASE_URL
         sync: false
