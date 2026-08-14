@@ -18,11 +18,19 @@ services:
         value: "Bernard Wachira"
       - key: CPX_APP_ID
         value: "35372"
+      - key: REWARD_SHARE
+        value: "0.70"
+      - key: CPX_REWARD_SHARE
+        value: "0.70"
+      - key: BITLABS_REWARD_SHARE
+        value: "0.70"
       - key: CPX_SECURE_HASH
         sync: false
       - key: BITLABS_API_TOKEN
         sync: false
       - key: BITLABS_APP_SECRET
+        sync: false
+      - key: BITLABS_POINTS_PER_USD
         sync: false
       - key: CINT_JWT
         sync: false

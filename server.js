@@ -109,9 +109,6 @@ async function initializeDatabase() {
       payment_details TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS survey_activity (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -123,52 +120,6 @@ async function initializeDatabase() {
       completed_at TIMESTAMPTZ,
       UNIQUE(user_id, survey_id)
     );
-  `);
-
-  // Safe migrations for databases created by earlier LilianTech versions.
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'member'`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
-  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS provider_reference VARCHAR(180)`);
-  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_error TEXT`);
-
-  // One-time cleanup of development/demo artifacts from earlier builds.
-  // Legitimate provider-backed records are preserved.
-  await pool.query(`
-    DELETE FROM provider_surveys
-    WHERE LOWER(provider_id) IN ('demo','test','local','mock')
-       OR LOWER(title) LIKE '%demo%'
-       OR LOWER(title) LIKE '%test survey%';
-  `);
-  await pool.query(`
-    DELETE FROM survey_activity
-    WHERE LOWER(survey_id) LIKE 'demo-%'
-       OR LOWER(survey_id) LIKE 'test-%'
-       OR LOWER(survey_id) LIKE 'local-%'
-       OR LOWER(title) LIKE '%demo%'
-       OR LOWER(title) LIKE '%test survey%';
-  `);
-  await pool.query(`
-    DELETE FROM transactions
-    WHERE LOWER(description) LIKE '%demo%'
-       OR LOWER(description) LIKE '%test earning%'
-       OR LOWER(description) LIKE '%test survey%';
-  `);
-  await pool.query(`
-    DELETE FROM withdrawals
-    WHERE LOWER(details) LIKE '%demo%'
-       OR LOWER(details) LIKE '%test%';
-  `);
-  // Rebuild balances from the remaining ledger so removed demo earnings cannot
-  // survive as hidden wallet balances.
-  await pool.query(`
-    UPDATE users u SET balance = COALESCE((
-      SELECT SUM(t.amount) FROM transactions t WHERE t.user_id=u.id
-    ), 0);
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS withdrawals (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -182,9 +133,6 @@ async function initializeDatabase() {
       provider_reference VARCHAR(180),
       payout_error TEXT
     );
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS transactions (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -194,9 +142,6 @@ async function initializeDatabase() {
       reference_id VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS provider_surveys (
       id SERIAL PRIMARY KEY,
       provider_id VARCHAR(80) NOT NULL,
@@ -209,9 +154,6 @@ async function initializeDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(provider_id, external_id)
     );
-  `);
-
-  await pool.query(`
     CREATE TABLE IF NOT EXISTS provider_transactions (
       id SERIAL PRIMARY KEY,
       provider_id VARCHAR(80) NOT NULL,
@@ -220,17 +162,35 @@ async function initializeDatabase() {
       survey_id VARCHAR(160),
       status VARCHAR(30) NOT NULL,
       amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0,
+      user_reward NUMERIC(12,2) NOT NULL DEFAULT 0,
+      margin NUMERIC(12,2) NOT NULL DEFAULT 0,
       raw_payload JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(provider_id, transaction_id)
     );
   `);
 
-  // There is exactly one designated administrator. Every startup reconciles the
-  // role so an ordinary member can never grant themselves admin access.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'member'`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
+  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS provider_reference VARCHAR(180)`);
+  await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_error TEXT`);
+  await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS user_reward NUMERIC(12,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS margin NUMERIC(12,2) NOT NULL DEFAULT 0`);
+
+  // One-time cleanup of development/demo artifacts from earlier builds.
+  await pool.query(`DELETE FROM provider_surveys WHERE LOWER(provider_id) IN ('demo','test','local','mock') OR LOWER(title) LIKE '%demo%' OR LOWER(title) LIKE '%test survey%'`);
+  await pool.query(`DELETE FROM survey_activity WHERE LOWER(survey_id) LIKE 'demo-%' OR LOWER(survey_id) LIKE 'test-%' OR LOWER(survey_id) LIKE 'local-%' OR LOWER(title) LIKE '%demo%' OR LOWER(title) LIKE '%test survey%'`);
+  await pool.query(`DELETE FROM transactions WHERE LOWER(description) LIKE '%demo%' OR LOWER(description) LIKE '%test earning%' OR LOWER(description) LIKE '%test survey%'`);
+  await pool.query(`DELETE FROM withdrawals WHERE LOWER(details) LIKE '%demo%' OR LOWER(details) LIKE '%test%'`);
+  await pool.query(`DELETE FROM provider_transactions WHERE LOWER(COALESCE(raw_payload::text,'')) LIKE '%demo%' OR LOWER(COALESCE(raw_payload::text,'')) LIKE '%test%'`);
+  await pool.query(`UPDATE users u SET balance = COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.user_id=u.id), 0)`);
+
   const { email: adminEmail, name: adminName } = getAdminIdentity();
   await pool.query(`UPDATE users SET role = CASE WHEN LOWER(email)=$1 AND full_name=$2 THEN 'admin' ELSE 'member' END`, [adminEmail, adminName]);
-
   console.log("Database initialized successfully.");
 }
 
@@ -298,6 +258,26 @@ function requireAuth(req, res, next) {
 function getMinimumWithdrawal() {
   const value = Number(process.env.MIN_WITHDRAWAL || 25);
   return Number.isFinite(value) && value > 0 ? value : 25;
+}
+
+function getRewardShare(providerId = '') {
+  const key = `${String(providerId).toUpperCase()}_REWARD_SHARE`;
+  const value = Number(process.env[key] ?? process.env.REWARD_SHARE ?? 0.70);
+  return Number.isFinite(value) && value > 0 && value <= 1 ? value : 0.70;
+}
+
+function calculateUserReward(providerId, publisherRevenueUsd, explicitUserReward = null) {
+  const explicit = Number(explicitUserReward);
+  if (Number.isFinite(explicit) && explicit >= 0) return Number(explicit.toFixed(2));
+  const gross = Number(publisherRevenueUsd || 0);
+  return Number((gross * getRewardShare(providerId)).toFixed(2));
+}
+
+function bitlabsPointsToUsd(points) {
+  const rate = Number(process.env.BITLABS_POINTS_PER_USD || 0);
+  const value = Number(points || 0);
+  if (!Number.isFinite(rate) || rate <= 0 || !Number.isFinite(value) || value < 0) return 0;
+  return Number((value / rate).toFixed(2));
 }
 
 function getAdminIdentity() {
@@ -600,7 +580,7 @@ async function getLiveProviderSurveys(user, req) {
       if (data.status === 'success') {
         for (const x of (data.surveys || [])) surveys.push({
           id: `cpx-${x.id}`, externalId: String(x.id), title: `CPX Research survey`,
-          minutes: Number(x.loi || 0), reward: `$${Number(x.payout_publisher_usd ?? x.payout ?? 0).toFixed(2)}`,
+          minutes: Number(x.loi || 0), reward: `$${calculateUserReward('cpx', Number(x.payout_publisher_usd || 0)).toFixed(2)}`, publisherRevenue: Number(x.payout_publisher_usd || 0),
           provider: 'CPX Research', providerId: 'cpx', href: x.href_new || x.href,
           source: 'live', live: true
         });
@@ -609,7 +589,7 @@ async function getLiveProviderSurveys(user, req) {
   }
 
   // BitLabs: user-based Survey API. The token is never exposed to the browser.
-  if (process.env.BITLABS_API_TOKEN) {
+  if (process.env.BITLABS_API_TOKEN && process.env.BITLABS_POINTS_PER_USD) {
     const r = await fetch('https://api.bitlabs.ai/v2/client/surveys?platform=WEB&sdk=CUSTOM', { signal: AbortSignal.timeout(10000),
       headers: {
         'X-Api-Token': process.env.BITLABS_API_TOKEN,
@@ -622,7 +602,7 @@ async function getLiveProviderSurveys(user, req) {
       for (const x of (data.surveys || [])) surveys.push({
         id: `bitlabs-${x.id || x.survey_id}`, externalId: String(x.id || x.survey_id),
         title: x.title || 'BitLabs survey', minutes: Number(x.loi || x.length_of_interview || 0),
-        reward: `$${Number(x.reward || x.payout || 0).toFixed(2)}`, provider: 'BitLabs',
+        reward: `$${bitlabsPointsToUsd(x.value).toFixed(2)}`, publisherRevenue: Number(x.payout || x.cpi || 0), provider: 'BitLabs',
         providerId: 'bitlabs', href: x.click_url || x.clickUrl, source: 'live', live: true
       });
     }
@@ -812,80 +792,49 @@ app.all('/api/providers/cpx/postback', async (req, res) => {
   try {
     if (!process.env.CPX_SECURE_HASH) return res.status(503).send('CPX secure hash not configured');
     const q = { ...req.query, ...req.body };
-    const status = String(q.status || '');
+    const status = String(q.status || '').trim();
     const transactionId = String(q.trans_id || q.transaction_id || '').trim();
     const userId = String(q.user_id || q.subid || q.ext_user_id || '').trim();
-    const amount = Number(q.amount_local ?? q.amount_usd ?? q.amount ?? 0);
+    const publisherRevenue = Number(q.payout_publisher_usd ?? q.publisher_payout_usd ?? q.amount_usd ?? q.amount ?? 0);
+    const explicitUserReward = Number(q.user_reward_usd ?? q.reward_usd ?? q.payout_usd);
+    const calculatedReward = calculateUserReward('cpx', publisherRevenue, Number.isFinite(explicitUserReward) ? explicitUserReward : null);
     const secureHash = String(q.secure_hash || '').trim().toLowerCase();
-    if (!transactionId || !userId || !/^\d+$/.test(userId) || !Number.isFinite(amount) || amount < 0 || !secureHash) {
-      return res.status(400).send('invalid');
-    }
-
+    if (!transactionId || !userId || !/^\d+$/.test(userId) || !Number.isFinite(publisherRevenue) || publisherRevenue < 0 || !secureHash) return res.status(400).send('invalid');
     const expected = crypto.createHash('md5').update(`${transactionId}-${process.env.CPX_SECURE_HASH}`).digest('hex');
-    if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) {
-      return res.status(403).send('invalid signature');
-    }
-
+    if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) return res.status(403).send('invalid signature');
     const numericUserId = Number(userId);
     const user = await pool.query('SELECT id FROM users WHERE id=$1', [numericUserId]);
     if (!user.rows[0]) return res.status(404).send('user not found');
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const exists = await client.query(
-        'SELECT id FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE',
-        ['cpx', transactionId]
-      );
-      if (exists.rows[0]) {
+      const existing = await client.query(`SELECT id,status,COALESCE(user_reward,amount,0) AS user_reward FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE`, ['cpx', transactionId]);
+      if (existing.rows[0]) {
+        const prior = existing.rows[0];
+        if (status === '2' && prior.status !== '2') {
+          const reversal = Number(prior.user_reward || 0);
+          if (reversal > 0) {
+            await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [reversal, numericUserId]);
+            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [numericUserId, -reversal, `CPX Research reversal ${transactionId}`, transactionId]);
+          }
+          await client.query(`UPDATE provider_transactions SET status='2' WHERE id=$1`, [prior.id]);
+        }
         await client.query('COMMIT');
         return res.status(200).send('ok');
       }
-
       const surveyId = String(q.offer_id || q.survey_id || '');
-      await client.query(
-        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        ['cpx', transactionId, numericUserId, surveyId, status, amount, q]
-      );
-
-      if (status === '1' && amount > 0) {
-        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amount, numericUserId]);
-        if (surveyId) {
-          await client.query(
-            `UPDATE survey_activity SET status='completed', completed_at=NOW(), reward=$1
-             WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`,
-            [amount, numericUserId, `cpx-${surveyId}`]
-          );
-        }
-        await client.query(
-          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
-           VALUES ($1,'earning',$2,$3,$4)`,
-          [numericUserId, amount, `CPX Research survey ${transactionId}`, transactionId]
-        );
-      } else if (status === '2' && amount > 0) {
-        // A reversal is a negative ledger entry. Do not silently clamp the balance:
-        // finance discrepancies must remain visible to the administrator.
-        await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [amount, numericUserId]);
-        await client.query(
-          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
-           VALUES ($1,'adjustment',$2,$3,$4)`,
-          [numericUserId, -amount, `CPX Research reversal ${transactionId}`, transactionId]
-        );
+      const userReward = status === '1' ? calculatedReward : 0;
+      const margin = Number((publisherRevenue - userReward).toFixed(2));
+      await client.query(`INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, ['cpx', transactionId, numericUserId, surveyId, status, userReward, publisherRevenue, userReward, margin, q]);
+      if (status === '1' && userReward > 0) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [userReward, numericUserId]);
+        if (surveyId) await client.query(`UPDATE survey_activity SET status='completed',completed_at=NOW(),reward=$1 WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`, [userReward, numericUserId, `cpx-${surveyId}`]);
+        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [numericUserId, userReward, `CPX Research survey ${transactionId}`, transactionId]);
       }
-
       await client.query('COMMIT');
       return res.status(200).send('ok');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
-  } catch (e) {
-    console.error('CPX callback:', e);
-    return res.status(500).send('error');
-  }
+    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+  } catch (e) { console.error('CPX callback:', e); return res.status(500).send('error'); }
 });
 
 // BitLabs S2S callback. BitLabs documents an HMAC-SHA1 hash over the complete
@@ -906,7 +855,9 @@ app.all('/api/providers/bitlabs/callback', async (req, res) => {
     const userId = String(req.query.uid || req.body?.uid || '').trim();
     const transactionId = String(req.query.tx || req.query.transaction_id || req.body?.tx || req.body?.transaction_id || '').trim();
     const activityType = String(req.query.activity_type || req.body?.activity_type || '').toUpperCase();
-    const amountUsd = Number(req.query.usd || req.query.value_usd || req.body?.usd || req.body?.value_usd || 0);
+    const publisherRevenue = Number(req.query.raw || req.query.revenue_usd || req.body?.raw || req.body?.revenue_usd || req.query.usd || req.body?.usd || 0);
+    const explicitUserReward = Number(req.query.reward_usd || req.body?.reward_usd);
+    const amountUsd = calculateUserReward('bitlabs', publisherRevenue, Number.isFinite(explicitUserReward) ? explicitUserReward : null);
     if (!/^\d+$/.test(userId) || !transactionId || !Number.isFinite(amountUsd) || amountUsd < 0) return res.status(400).send('invalid');
 
     const numericUserId = Number(userId);
@@ -921,16 +872,27 @@ app.all('/api/providers/bitlabs/callback', async (req, res) => {
         ['bitlabs', transactionId]
       );
       if (exists.rows[0]) {
+        if (['REVERSAL','CHARGEBACK','REJECTED'].includes(activityType) && exists.rows[0].status !== activityType) {
+          const prior = await client.query(`SELECT COALESCE(user_reward,amount,0) AS user_reward FROM provider_transactions WHERE id=$1 FOR UPDATE`, [exists.rows[0].id]);
+          const reversal = Number(prior.rows[0]?.user_reward || 0);
+          if (reversal > 0) {
+            await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [reversal, numericUserId]);
+            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [numericUserId, -reversal, `BitLabs reversal ${transactionId}`, transactionId]);
+          }
+          await client.query(`UPDATE provider_transactions SET status=$1 WHERE id=$2`, [activityType, exists.rows[0].id]);
+        }
         await client.query('COMMIT');
         return res.status(200).send('ok');
       }
+      const userReward = (activityType === 'COMPLETE' || activityType === 'RECONCILIATION') ? amountUsd : 0;
+      const margin = Number((publisherRevenue - userReward).toFixed(2));
       await client.query(
-        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        ['bitlabs', transactionId, numericUserId, String(req.query.survey_id || req.body?.survey_id || ''), activityType || 'UNKNOWN', amountUsd, { query: req.query, body: req.body }]
+        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        ['bitlabs', transactionId, numericUserId, String(req.query.survey_id || req.body?.survey_id || ''), activityType || 'UNKNOWN', userReward, publisherRevenue, userReward, margin, { query: req.query, body: req.body }]
       );
-      if ((activityType === 'COMPLETE' || activityType === 'RECONCILIATION') && amountUsd > 0) {
-        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amountUsd, numericUserId]);
+      if (userReward > 0) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [userReward, numericUserId]);
         await client.query(
           `INSERT INTO transactions (user_id,type,amount,description,reference_id)
            VALUES ($1,'earning',$2,$3,$4)`,
@@ -1115,15 +1077,48 @@ app.put("/api/profile", requireAuth, async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: "Unable to update profile." }); }
 });
 
+app.get("/api/admin/revenue", requireAdmin, async (req, res) => {
+  try {
+    const summary = await pool.query(`
+      SELECT
+        COALESCE(SUM(publisher_revenue),0) AS gross_revenue,
+        COALESCE(SUM(user_reward),0) AS member_rewards,
+        COALESCE(SUM(margin),0) AS platform_margin,
+        COUNT(*)::int AS provider_events
+      FROM provider_transactions
+      WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')
+    `);
+    const byProvider = await pool.query(`
+      SELECT provider_id, COALESCE(SUM(publisher_revenue),0) AS gross_revenue,
+             COALESCE(SUM(user_reward),0) AS member_rewards,
+             COALESCE(SUM(margin),0) AS platform_margin, COUNT(*)::int AS events
+      FROM provider_transactions
+      WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')
+      GROUP BY provider_id ORDER BY provider_id
+    `);
+    const pendingLiability = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE status IN ('pending','approved','processing')`);
+    const result = summary.rows[0];
+    res.json({
+      grossRevenue: Number(result.gross_revenue || 0),
+      memberRewards: Number(result.member_rewards || 0),
+      platformMargin: Number(result.platform_margin || 0),
+      providerEvents: result.provider_events,
+      pendingWithdrawalLiability: Number(pendingLiability.rows[0].amount || 0),
+      providers: byProvider.rows.map(x => ({ providerId:x.provider_id, grossRevenue:Number(x.gross_revenue||0), memberRewards:Number(x.member_rewards||0), platformMargin:Number(x.platform_margin||0), events:x.events }))
+    });
+  } catch(e) { console.error(e); res.status(500).json({error:"Unable to load revenue dashboard."}); }
+});
+
 app.get("/api/admin/overview", requireAdmin, async (req, res) => {
   try {
-    const [users, pending, surveys, providers] = await Promise.all([
+    const [users, pending, surveys, providers, revenue] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int AS count FROM users`),
       pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved','processing')`),
       pool.query(`SELECT COUNT(*)::int AS count FROM survey_activity WHERE status='completed'`),
-      pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`)
+      pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`),
+      pool.query(`SELECT COALESCE(SUM(publisher_revenue),0) AS gross, COALESCE(SUM(user_reward),0) AS rewards, COALESCE(SUM(margin),0) AS margin FROM provider_transactions WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')`)
     ]);
-    res.json({ users: users.rows[0].count, pendingWithdrawals: pending.rows[0].count, pendingAmount: pending.rows[0].amount, completedSurveys: surveys.rows[0].count, providerSurveys: providers.rows });
+    res.json({ users: users.rows[0].count, pendingWithdrawals: pending.rows[0].count, pendingAmount: pending.rows[0].amount, completedSurveys: surveys.rows[0].count, providerSurveys: providers.rows, grossRevenue: revenue.rows[0].gross, memberRewards: revenue.rows[0].rewards, platformMargin: revenue.rows[0].margin });
   } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load admin overview." }); }
 });
 
