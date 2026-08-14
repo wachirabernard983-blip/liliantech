@@ -1,76 +1,40 @@
-# LilianTech
+# LilianTech — Survey & Rewards Platform
 
-Clean MVP for the LilianTech survey and rewards platform.
+This build preserves the working authentication/session behavior and adds the main member and admin modules in one pass.
 
-## Structure
+## Included
 
-- `data/` = demo survey/provider data
-- `public/` = website files
-- `server.js` = Express server, authentication and API
-- `package.json` = Node dependencies
-- `render.yaml` = Render deployment configuration
+- Server-side PostgreSQL sessions
+- Registration/login/logout
+- Dashboard overview
+- Available/in-progress/completed surveys
+- Provider survey inventory import layer
+- Earnings ledger
+- Withdrawal requests and withdrawal history
+- Minimum withdrawal configuration
+- Profile and payout settings
+- Admin overview
+- User management view
+- Withdrawal approval/rejection/payment workflow
+- Provider survey inventory management
+- Production health endpoint
+- Render deployment configuration
 
-## Authentication
+## Important: real survey providers
 
-LilianTech uses:
+The demo surveys remain available for testing. Provider survey inventory can be imported from approved providers through the admin panel. A real CPX/BitLabs/Cint integration must use the provider's approved API/offerwall credentials, callback rules and commercial terms. Do not invent provider credentials or scrape their inventory.
 
-- PostgreSQL for user accounts
-- `express-session` for server-side login sessions
-- `connect-pg-simple` for storing sessions in PostgreSQL
-- HTTP-only cookies so the browser does not store the logged-in user in `sessionStorage`
+## Production environment
 
-## Render environment variable
+Set:
 
-Set this environment variable in Render:
+- `DATABASE_URL` — PostgreSQL connection string
+- `SESSION_SECRET` — long random secret (Render can generate it)
+- `ADMIN_EMAILS` — comma-separated email addresses that should receive the admin role during startup
+- `MIN_WITHDRAWAL` — minimum withdrawal amount, default 10
 
-`SESSION_SECRET`
+## Deployment
 
-Use a long random value. Do not put the secret in GitHub.
+The included `render.yaml` is configured for a Node web service. After deployment, attach your custom domain in the hosting provider and point the domain's DNS records to the host as instructed by that provider.
 
-`DATABASE_URL` should continue to point to your PostgreSQL database.
-
-## Render build
-
-```text
-npm install
-```
-
-## Render start
-
-```text
-npm start
-```
-
-
-## Authentication deployment
-
-Set these Render environment variables:
-
-- `DATABASE_URL` — your PostgreSQL connection string
-- `SESSION_SECRET` — a long random secret
-
-After deployment, test this flow:
-
-1. Create an account.
-2. Log in.
-3. Confirm you are sent to `/dashboard.html`, not `/`.
-4. Refresh the dashboard. Your account should remain signed in.
-5. Open `/` and confirm the navigation shows `Dashboard`.
-6. Log out and confirm the session is removed.
-
-
-### Session/navigation fix
-Application pages are served with no-cache headers and the session cookie is scoped to `/` so moving between Home and Dashboard does not create a new anonymous session. The homepage checks `/api/me` without cache.
-
-
-## Dashboard
-
-The authenticated dashboard now includes:
-- Account information and live balance
-- Available / In Progress / Completed survey states
-- Survey start and completion actions
-- Survey earnings added to the member balance on completion
-- Survey history
-- Logout remains the only action that destroys the session
-
-The authentication/session configuration was preserved.
+Before going live, verify HTTPS, PostgreSQL, session persistence, email delivery, provider approval/credentials, payout provider compliance, privacy policy, terms, and applicable legal requirements.

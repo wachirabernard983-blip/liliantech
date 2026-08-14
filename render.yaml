@@ -4,3 +4,15 @@ services:
     runtime: node
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: MIN_WITHDRAWAL
+        value: "10"
+      - key: ADMIN_EMAILS
+        sync: false
+      - key: DATABASE_URL
+        sync: false

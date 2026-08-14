@@ -78,6 +78,10 @@ async function initializeDatabase() {
       email VARCHAR(255) UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       balance NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      role VARCHAR(20) NOT NULL DEFAULT 'member',
+      phone VARCHAR(40),
+      payment_method VARCHAR(40),
+      payment_details TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
@@ -95,6 +99,59 @@ async function initializeDatabase() {
       UNIQUE(user_id, survey_id)
     );
   `);
+
+  // Safe migrations for databases created by earlier LilianTech versions.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'member'`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+      method VARCHAR(40) NOT NULL,
+      details TEXT NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      admin_note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      processed_at TIMESTAMPTZ
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type VARCHAR(30) NOT NULL,
+      amount NUMERIC(12,2) NOT NULL,
+      description VARCHAR(255) NOT NULL,
+      reference_id VARCHAR(120),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS provider_surveys (
+      id SERIAL PRIMARY KEY,
+      provider_id VARCHAR(80) NOT NULL,
+      external_id VARCHAR(160) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      reward NUMERIC(12,2) NOT NULL DEFAULT 0,
+      minutes INTEGER NOT NULL DEFAULT 10,
+      country VARCHAR(10) DEFAULT 'US',
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(provider_id, external_id)
+    );
+  `);
+
+  // Optional deployment convenience: set ADMIN_EMAILS=email1,email2 in production.
+  const adminEmails = String(process.env.ADMIN_EMAILS || '').split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+  if (adminEmails.length) {
+    await pool.query(`UPDATE users SET role = 'admin' WHERE LOWER(email) = ANY($1::text[])`, [adminEmails]);
+  }
 
   console.log("Database initialized successfully.");
 }
@@ -140,9 +197,24 @@ function requireAuth(req, res, next) {
   next();
 }
 
+function getMinimumWithdrawal() {
+  const value = Number(process.env.MIN_WITHDRAWAL || 10);
+  return Number.isFinite(value) && value > 0 ? value : 10;
+}
+
+function requireAdmin(req, res, next) {
+  if (!req.session.userId) return res.status(401).json({ error: "Authentication required." });
+  pool.query('SELECT role FROM users WHERE id = $1', [req.session.userId])
+    .then(result => {
+      if (!result.rows[0] || result.rows[0].role !== 'admin') return res.status(403).json({ error: "Administrator access required." });
+      next();
+    })
+    .catch(() => res.status(500).json({ error: "Unable to verify administrator access." }));
+}
+
 async function getUserById(id) {
   const result = await pool.query(
-    `SELECT id, full_name, email, balance, created_at
+    `SELECT id, full_name, email, balance, role, phone, payment_method, payment_details, created_at
      FROM users
      WHERE id = $1`,
     [id]
@@ -191,10 +263,14 @@ app.get("/api/me", async (req, res) => {
   }
 });
 
-app.get("/api/surveys", (req, res) => {
-  res.sendFile(
-    path.join(__dirname, "data", "surveys.json")
-  );
+app.get("/api/surveys", async (req, res) => {
+  try {
+    res.set("Cache-Control", "no-store");
+    res.json(await getAllSurveyInventory());
+  } catch (error) {
+    console.error("Survey inventory error:", error);
+    res.status(500).json({ error: "Unable to load surveys." });
+  }
 });
 
 app.get("/api/providers", (req, res) => {
@@ -372,8 +448,32 @@ function getSurveyInventory() {
   return require(path.join(__dirname, "data", "surveys.json"));
 }
 
-function getSurveyById(surveyId) {
-  return getSurveyInventory().find((survey) => survey.id === surveyId);
+async function getAllSurveyInventory() {
+  const local = getSurveyInventory();
+  const provider = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country, status FROM provider_surveys WHERE status='active'`);
+  const imported = provider.rows.map(row => ({
+    id: `provider-${row.id}`,
+    title: row.title,
+    minutes: row.minutes,
+    reward: `$${Number(row.reward || 0).toFixed(2)}`,
+    provider: row.provider_id,
+    externalId: row.external_id,
+    country: row.country
+  }));
+  return [...local, ...imported];
+}
+
+async function getSurveyById(surveyId) {
+  const local = getSurveyInventory().find((survey) => survey.id === surveyId);
+  if (local) return local;
+  if (String(surveyId).startsWith('provider-')) {
+    const id = Number(String(surveyId).replace('provider-', ''));
+    if (Number.isInteger(id)) {
+      const r = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country FROM provider_surveys WHERE id=$1 AND status='active'`, [id]);
+      if (r.rows[0]) return { id: `provider-${r.rows[0].id}`, title: r.rows[0].title, minutes: r.rows[0].minutes, reward: `$${Number(r.rows[0].reward || 0).toFixed(2)}`, provider: r.rows[0].provider_id, externalId: r.rows[0].external_id, country: r.rows[0].country };
+    }
+  }
+  return null;
 }
 
 app.get("/api/dashboard", requireAuth, async (req, res) => {
@@ -403,7 +503,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
     res.json({
       user,
       stats: {
-        available: getSurveyInventory().filter(
+        available: (await getAllSurveyInventory()).filter(
           (survey) => !activity.rows.some((item) => item.survey_id === survey.id)
         ).length,
         inProgress: inProgress.length,
@@ -420,7 +520,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
 
 app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
   try {
-    const survey = getSurveyById(req.params.surveyId);
+    const survey = await getSurveyById(req.params.surveyId);
 
     if (!survey) {
       return res.status(404).json({ error: "Survey not found." });
@@ -462,7 +562,7 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const survey = getSurveyById(req.params.surveyId);
+    const survey = await getSurveyById(req.params.surveyId);
 
     if (!survey) {
       return res.status(404).json({ error: "Survey not found." });
@@ -504,6 +604,12 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
       [reward, req.session.userId]
     );
 
+    await client.query(
+      `INSERT INTO transactions (user_id, type, amount, description, reference_id)
+       VALUES ($1, 'earning', $2, $3, $4)`,
+      [req.session.userId, reward, `Completed ${survey.title}`, survey.id]
+    );
+
     await client.query("COMMIT");
 
     res.json({
@@ -518,6 +624,123 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   } finally {
     client.release();
   }
+});
+
+// ---------- Earnings, withdrawals, profile and administration ----------
+app.get("/api/earnings", requireAuth, async (req, res) => {
+  try {
+    const user = await getUserById(req.session.userId);
+    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status='pending'`, [req.session.userId]);
+    const tx = await pool.query(`SELECT id, type, amount, description, reference_id, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
+    const pendingAmount = Number(pending.rows[0].amount || 0);
+    res.json({ total: Number(user.balance || 0), pending: pendingAmount, available: Math.max(0, Number(user.balance || 0) - pendingAmount), transactions: tx.rows, minimumWithdrawal: getMinimumWithdrawal() });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load earnings." }); }
+});
+
+app.get("/api/withdrawals", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, amount, method, details, status, admin_note, created_at, processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC`, [req.session.userId]);
+    res.json({ withdrawals: result.rows, minimumWithdrawal: getMinimumWithdrawal() });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
+});
+
+app.post("/api/withdrawals", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const amount = Number(req.body.amount);
+    const method = String(req.body.method || '').trim();
+    const details = String(req.body.details || '').trim();
+    const minimum = getMinimumWithdrawal();
+    if (!Number.isFinite(amount) || amount < minimum) return res.status(400).json({ error: `Minimum withdrawal is $${minimum.toFixed(2)}.` });
+    if (!method || !details) return res.status(400).json({ error: "Payment method and payment details are required." });
+    await client.query('BEGIN');
+    const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [req.session.userId]);
+    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status='pending'`, [req.session.userId]);
+    const available = Number(user.rows[0]?.balance || 0) - Number(pending.rows[0]?.amount || 0);
+    if (amount > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Insufficient available balance." }); }
+    const result = await client.query(`INSERT INTO withdrawals (user_id, amount, method, details) VALUES ($1,$2,$3,$4) RETURNING id, amount, method, status, created_at`, [req.session.userId, amount.toFixed(2), method, details]);
+    await client.query('COMMIT');
+    res.status(201).json({ message: "Withdrawal request submitted.", withdrawal: result.rows[0] });
+  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); res.status(500).json({ error: "Unable to submit withdrawal." }); } finally { client.release(); }
+});
+
+app.put("/api/profile", requireAuth, async (req, res) => {
+  try {
+    const fullName = String(req.body.fullName || '').trim();
+    const phone = String(req.body.phone || '').trim();
+    const paymentMethod = String(req.body.paymentMethod || '').trim();
+    const paymentDetails = String(req.body.paymentDetails || '').trim();
+    if (!fullName) return res.status(400).json({ error: "Full name is required." });
+    const result = await pool.query(`UPDATE users SET full_name=$1, phone=$2, payment_method=$3, payment_details=$4 WHERE id=$5 RETURNING id, full_name, email, balance, role, phone, payment_method, payment_details, created_at`, [fullName, phone || null, paymentMethod || null, paymentDetails || null, req.session.userId]);
+    res.json({ message: "Profile updated.", user: result.rows[0] });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to update profile." }); }
+});
+
+app.get("/api/admin/overview", requireAdmin, async (req, res) => {
+  try {
+    const [users, pending, surveys, providers] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM users`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status='pending'`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM survey_activity WHERE status='completed'`),
+      pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`)
+    ]);
+    res.json({ users: users.rows[0].count, pendingWithdrawals: pending.rows[0].count, pendingAmount: pending.rows[0].amount, completedSurveys: surveys.rows[0].count, providerSurveys: providers.rows });
+  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load admin overview." }); }
+});
+
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  try { const r = await pool.query(`SELECT id, full_name, email, balance, role, created_at FROM users ORDER BY created_at DESC LIMIT 500`); res.json({ users: r.rows }); }
+  catch (e) { console.error(e); res.status(500).json({ error: "Unable to load users." }); }
+});
+
+app.get("/api/admin/withdrawals", requireAdmin, async (req, res) => {
+  try { const r = await pool.query(`SELECT w.id,w.amount,w.method,w.details,w.status,w.admin_note,w.created_at,w.processed_at,u.full_name,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC LIMIT 500`); res.json({ withdrawals: r.rows }); }
+  catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
+});
+
+app.post("/api/admin/withdrawals/:id/process", requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const status = String(req.body.status || '').toLowerCase();
+    const note = String(req.body.note || '').trim();
+    if (!['approved','rejected','paid'].includes(status)) return res.status(400).json({ error: "Status must be approved, rejected, or paid." });
+    await client.query('BEGIN');
+    const wr = await client.query(`SELECT * FROM withdrawals WHERE id=$1 FOR UPDATE`, [req.params.id]);
+    if (!wr.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: "Withdrawal not found." }); }
+    const w = wr.rows[0];
+    if (w.status === 'paid' || w.status === 'rejected') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal is already finalized." }); }
+    if (status === 'approved') {
+      // Approval reserves the request but does not remove funds. Funds are removed only when marked paid.
+    }
+    if (status === 'paid') {
+      const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
+      if (Number(user.rows[0].balance) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "User no longer has enough balance to pay this withdrawal." }); }
+      await client.query(`UPDATE users SET balance=balance-$1 WHERE id=$2`, [w.amount,w.user_id]);
+      await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'withdrawal',$2,$3,$4)`, [w.user_id, -Number(w.amount), `Withdrawal paid via ${w.method}`, String(w.id)]);
+    }
+    await client.query(`UPDATE withdrawals SET status=$1, admin_note=$2, processed_at=NOW() WHERE id=$3`, [status,note||null,w.id]);
+    await client.query('COMMIT');
+    res.json({ message: `Withdrawal marked ${status}.` });
+  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); res.status(500).json({ error: "Unable to process withdrawal." }); } finally { client.release(); }
+});
+
+app.get("/api/admin/provider-surveys", requireAdmin, async (req,res)=>{
+  try { const r=await pool.query(`SELECT id,provider_id,external_id,title,reward,minutes,country,status,created_at FROM provider_surveys ORDER BY created_at DESC`); res.json({surveys:r.rows}); }
+  catch(e){console.error(e);res.status(500).json({error:"Unable to load provider surveys."});}
+});
+
+app.post("/api/admin/provider-surveys", requireAdmin, async (req,res)=>{
+  try {
+    const {providerId,externalId,title,reward,minutes,country,status='active'}=req.body;
+    if(!providerId||!externalId||!title) return res.status(400).json({error:"Provider, external ID and title are required."});
+    const r=await pool.query(`INSERT INTO provider_surveys (provider_id,external_id,title,reward,minutes,country,status) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(provider_id,external_id) DO UPDATE SET title=EXCLUDED.title,reward=EXCLUDED.reward,minutes=EXCLUDED.minutes,country=EXCLUDED.country,status=EXCLUDED.status RETURNING *`,[providerId,externalId,title,Number(reward)||0,Number(minutes)||10,country||'US',status]);
+    res.status(201).json({message:"Provider survey saved.",survey:r.rows[0]});
+  }catch(e){console.error(e);res.status(500).json({error:"Unable to save provider survey."});}
+});
+
+app.get("/api/admin/providers", requireAdmin, async (req,res)=>{
+  try { res.json({providers: require(path.join(__dirname,'data','providers.json'))}); }
+  catch(e){res.status(500).json({error:"Unable to load providers."});}
 });
 
 async function startServer() {
