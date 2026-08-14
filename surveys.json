@@ -1,0 +1,7 @@
+[
+{"id":"demo-001","title":"Consumer habits study","minutes":8,"reward":"$0.80","provider":"Demo Provider"},
+{"id":"demo-002","title":"Technology & apps","minutes":12,"reward":"$1.25","provider":"Demo Provider"},
+{"id":"demo-003","title":"Shopping preferences","minutes":15,"reward":"$2.10","provider":"Demo Provider"},
+{"id":"demo-004","title":"Travel planning","minutes":10,"reward":"$1.10","provider":"Demo Provider"},
+{"id":"demo-005","title":"Digital services research","minutes":18,"reward":"$2.40","provider":"Demo Provider"}
+]
