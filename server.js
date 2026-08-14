@@ -20,8 +20,17 @@ const pool = new Pool({
 
 const PgSession = connectPgSimple(session);
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "64kb" }));
+app.use(express.urlencoded({ extended: true, limit: "64kb" }));
+
+// Basic production security headers. Keep framing available for provider survey
+// pages; the survey player itself embeds third-party content.
+app.use((req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
 
 // Never cache application pages; navigation must always reflect the current session.
 app.use((req, res, next) => {
@@ -66,6 +75,22 @@ app.get("/surveys", (req, res) => {
     return res.redirect("/dashboard.html#surveys");
   }
   res.redirect("/#surveys");
+});
+
+// Protect the admin document itself, not just its API calls. Normal members
+// should not be able to open /admin.html directly.
+app.get("/admin.html", async (req, res) => {
+  if (!req.session.userId) return res.redirect("/login.html");
+  try {
+    const result = await pool.query('SELECT full_name, email, role FROM users WHERE id=$1', [req.session.userId]);
+    if (!isDesignatedAdmin(result.rows[0])) {
+      return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to the designated LilianTech administrator.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
+    }
+    return res.sendFile(path.join(__dirname, "public", "admin.html"));
+  } catch (error) {
+    console.error("Admin page access check failed:", error);
+    return res.status(500).send("Unable to verify administrator access.");
+  }
 });
 
 app.use(express.static(path.join(__dirname, "public")));
@@ -162,9 +187,9 @@ async function initializeDatabase() {
     );
   `);
 
-  // Optional deployment convenience: set ADMIN_EMAILS=email1,email2 in production.
-  const adminEmail = String(process.env.ADMIN_EMAIL || 'wachirabernard193@gmail.com').trim().toLowerCase();
-  const adminName = String(process.env.ADMIN_NAME || 'Bernard Wachira').trim();
+  // There is exactly one designated administrator. Every startup reconciles the
+  // role so an ordinary member can never grant themselves admin access.
+  const { email: adminEmail, name: adminName } = getAdminIdentity();
   await pool.query(`UPDATE users SET role = CASE WHEN LOWER(email)=$1 AND full_name=$2 THEN 'admin' ELSE 'member' END`, [adminEmail, adminName]);
 
   console.log("Database initialized successfully.");
@@ -201,6 +226,26 @@ function verifyPassword(password, storedHash) {
   return crypto.timingSafeEqual(hashBuffer, originalBuffer);
 }
 
+const authAttempts = new Map();
+const providerSurveyCache = new Map();
+function authRateLimit(req, res, next) {
+  const key = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = 10;
+  const entry = authAttempts.get(key);
+  if (!entry || now - entry.startedAt >= windowMs) {
+    authAttempts.set(key, { startedAt: now, count: 1 });
+    return next();
+  }
+  if (entry.count >= maxAttempts) {
+    res.set("Retry-After", String(Math.ceil((windowMs - (now - entry.startedAt)) / 1000)));
+    return res.status(429).json({ error: "Too many authentication attempts. Please try again later." });
+  }
+  entry.count += 1;
+  return next();
+}
+
 function requireAuth(req, res, next) {
   if (!req.session.userId) {
     return res.status(401).json({
@@ -216,14 +261,29 @@ function getMinimumWithdrawal() {
   return Number.isFinite(value) && value > 0 ? value : 25;
 }
 
+function getAdminIdentity() {
+  return {
+    name: String(process.env.ADMIN_NAME || "Bernard Wachira").trim(),
+    email: String(process.env.ADMIN_EMAIL || "wachirabernard193@gmail.com").trim().toLowerCase()
+  };
+}
+
+function isDesignatedAdmin(user) {
+  const admin = getAdminIdentity();
+  return Boolean(
+    user &&
+    user.role === "admin" &&
+    user.full_name === admin.name &&
+    String(user.email || "").toLowerCase() === admin.email
+  );
+}
+
 function requireAdmin(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: "Authentication required." });
   pool.query('SELECT full_name, email, role FROM users WHERE id = $1', [req.session.userId])
     .then(result => {
       const u = result.rows[0];
-      const adminEmail = String(process.env.ADMIN_EMAIL || 'wachirabernard193@gmail.com').trim().toLowerCase();
-      const adminName = String(process.env.ADMIN_NAME || 'Bernard Wachira').trim();
-      if (!u || u.role !== 'admin' || u.full_name !== adminName || String(u.email).toLowerCase() !== adminEmail) return res.status(403).json({ error: "Administrator access required." });
+      if (!isDesignatedAdmin(u)) return res.status(403).json({ error: "Administrator access required." });
       next();
     })
     .catch(() => res.status(500).json({ error: "Unable to verify administrator access." }));
@@ -291,13 +351,13 @@ app.get("/api/surveys", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/providers", (req, res) => {
+app.get("/api/providers", requireAdmin, (req, res) => {
   res.sendFile(
     path.join(__dirname, "data", "providers.json")
   );
 });
 
-app.post("/api/register", async (req, res) => {
+app.post("/api/register", authRateLimit, async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
 
@@ -314,6 +374,13 @@ app.post("/api/register", async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    const adminIdentity = getAdminIdentity();
+    if (normalizedEmail === adminIdentity.email && fullName.trim() !== adminIdentity.name) {
+      return res.status(403).json({ error: "That administrator email is reserved for the designated administrator." });
+    }
+    if (normalizedEmail === adminIdentity.email) {
+      return res.status(403).json({ error: "The designated administrator account must be provisioned separately." });
+    }
 
     const existingUser = await pool.query(
       "SELECT id FROM users WHERE email = $1",
@@ -350,7 +417,7 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", authRateLimit, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -462,36 +529,33 @@ app.get("/api/account", requireAuth, async (req, res) => {
 });
 
 
-function getSurveyInventory() {
-  return require(path.join(__dirname, "data", "surveys.json"));
-}
-
 async function getAllSurveyInventory(user = null, req = null) {
-  const local = getSurveyInventory();
-  const imported = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country, status FROM provider_surveys WHERE status='active'`);
-  const dbInventory = imported.rows.map(row => ({
-    id: `provider-${row.id}`, title: row.title, minutes: row.minutes,
-    reward: `$${Number(row.reward || 0).toFixed(2)}`, provider: row.provider_id,
-    externalId: row.external_id, country: row.country, source: 'imported'
-  }));
-  const live = user && req ? await getLiveProviderSurveys(user, req).catch(err => { console.error('Provider survey fetch:', err); return []; }) : [];
-  return [...local, ...dbInventory, ...live];
+  // Only provider-backed inventory is eligible for display or earning.
+  // There is intentionally no local/demo survey inventory.
+  if (!user || !req) return [];
+  return await getLiveProviderSurveys(user, req).catch(err => {
+    console.error('Provider survey fetch:', err);
+    return [];
+  });
 }
 
 async function getLiveProviderSurveys(user, req) {
   const surveys = [];
   const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().replace('::ffff:','');
   const ua = String(req.headers['user-agent'] || '');
+  const cacheKey = `${user.id}:${ip}:${crypto.createHash('sha1').update(ua).digest('hex')}`;
+  const cached = providerSurveyCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < 120000) return cached.surveys;
 
   // CPX Research: user-based API. App ID is public; secure hash stays server-side.
   const cpxAppId = process.env.CPX_APP_ID || '35372';
-  if (cpxAppId) {
+  if (cpxAppId && process.env.CPX_SECURE_HASH) {
     const q = new URLSearchParams({
       app_id: cpxAppId, ext_user_id: String(user.id), output_method: 'api',
       ip_user: ip || '0.0.0.0', user_agent: ua, limit: '12'
     });
     if (process.env.CPX_SECURE_HASH) q.set('secure_hash', crypto.createHash('md5').update(`${user.id}-${process.env.CPX_SECURE_HASH}`).digest('hex'));
-    const r = await fetch(`https://live-api.cpx-research.com/api/get-surveys.php?${q}`);
+    const r = await fetch(`https://live-api.cpx-research.com/api/get-surveys.php?${q}`, { signal: AbortSignal.timeout(10000) });
     if (r.ok) {
       const data = await r.json();
       if (data.status === 'success') {
@@ -507,8 +571,12 @@ async function getLiveProviderSurveys(user, req) {
 
   // BitLabs: user-based Survey API. The token is never exposed to the browser.
   if (process.env.BITLABS_API_TOKEN) {
-    const r = await fetch('https://api.bitlabs.ai/v2/client/surveys?platform=WEB&sdk=CUSTOM', {
-      headers: { 'X-Api-Token': process.env.BITLABS_API_TOKEN, accept: 'application/json' }
+    const r = await fetch('https://api.bitlabs.ai/v2/client/surveys?platform=WEB&sdk=CUSTOM', { signal: AbortSignal.timeout(10000),
+      headers: {
+        'X-Api-Token': process.env.BITLABS_API_TOKEN,
+        'X-User-Id': String(user.id),
+        accept: 'application/json'
+      }
     });
     if (r.ok) {
       const data = await r.json();
@@ -523,20 +591,15 @@ async function getLiveProviderSurveys(user, req) {
 
   // Cint and Dynata are credential/signature based. The adapters are intentionally
   // gated until approved credentials are supplied, so no fake inventory is shown.
-  return surveys.filter(x => x.href);
+  const result = surveys.filter(x => x.href);
+  providerSurveyCache.set(cacheKey, { timestamp: Date.now(), surveys: result });
+  return result;
 }
 
-async function getSurveyById(surveyId) {
-  const local = getSurveyInventory().find((survey) => survey.id === surveyId);
-  if (local) return local;
-  if (String(surveyId).startsWith('provider-')) {
-    const id = Number(String(surveyId).replace('provider-', ''));
-    if (Number.isInteger(id)) {
-      const r = await pool.query(`SELECT id, provider_id, external_id, title, reward, minutes, country FROM provider_surveys WHERE id=$1 AND status='active'`, [id]);
-      if (r.rows[0]) return { id: `provider-${r.rows[0].id}`, title: r.rows[0].title, minutes: r.rows[0].minutes, reward: `$${Number(r.rows[0].reward || 0).toFixed(2)}`, provider: r.rows[0].provider_id, externalId: r.rows[0].external_id, country: r.rows[0].country };
-    }
-  }
-  return null;
+async function getSurveyById(surveyId, user = null, req = null) {
+  if (!user || !req) return null;
+  const live = await getLiveProviderSurveys(user, req).catch(() => []);
+  return live.find(survey => survey.id === surveyId) || null;
 }
 
 app.get("/api/dashboard", requireAuth, async (req, res) => {
@@ -583,10 +646,10 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
 
 app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
   try {
-    const survey = await getSurveyById(req.params.surveyId);
+    const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
 
-    if (!survey) {
-      return res.status(404).json({ error: "Survey not found." });
+    if (!survey || (isProduction && !survey.live)) {
+      return res.status(404).json({ error: "Survey not found or not available for live earning." });
     }
 
     const existing = await pool.query(
@@ -633,7 +696,7 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const survey = await getSurveyById(req.params.surveyId);
+    const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
 
     if (!survey) {
       return res.status(404).json({ error: "Survey not found." });
@@ -660,9 +723,11 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
     }
 
     const reward = Number(activity.rows[0].reward || 0);
-    if (String(survey.id).startsWith('cpx-') || String(survey.id).startsWith('bitlabs-')) {
+    const isLiveProviderSurvey = Boolean(survey.live);
+    const isImportedProviderSurvey = String(survey.id).startsWith("provider-");
+    if (isLiveProviderSurvey || isImportedProviderSurvey || isProduction) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Provider surveys are completed and credited by the provider callback." });
+      return res.status(400).json({ error: "This survey can only be completed and credited by its approved provider." });
     }
 
     await client.query(
@@ -701,11 +766,157 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   }
 });
 
-// ---------- Provider callbacks ----------\n// CPX postback: credit only verified, idempotent transactions. Configure the exact\n// callback URL in CPX as https://liliantech.online/api/providers/cpx/postback.\napp.all('/api/providers/cpx/postback', async (req, res) => {\n  try {\n    const q = { ...req.query, ...req.body };\n    const status = String(q.status || '');\n    const transactionId = String(q.trans_id || q.transaction_id || '');\n    const userId = String(q.user_id || q.subid || '');\n    const amount = Number(q.amount_usd || q.amount_local || 0);\n    const secureHash = String(q.secure_hash || '');\n    if (!transactionId || !userId || !Number.isFinite(amount)) return res.status(400).send('invalid');\n    if (process.env.CPX_SECURE_HASH) {\n      const expected = crypto.createHash('md5').update(`${transactionId}-${process.env.CPX_SECURE_HASH}`).digest('hex');\n      if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) return res.status(403).send('invalid signature');\n    } else {\n      return res.status(503).send('CPX secure hash not configured');\n    }\n    const user = await pool.query('SELECT id FROM users WHERE id=$1', [Number(userId)]);\n    if (!user.rows[0]) return res.status(404).send('user not found');\n    const client = await pool.connect();\n    try {\n      await client.query('BEGIN');\n      const exists = await client.query('SELECT id,status FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE', ['cpx', transactionId]);\n      if (exists.rows[0]) { await client.query('COMMIT'); return res.status(200).send('ok'); }\n      await client.query(`INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7)`, ['cpx', transactionId, Number(userId), String(q.offer_id || q.survey_id || ''), status, amount, q]);\n      if (status === '1' && amount > 0) {\n        await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [amount, Number(userId)]);\n        await client.query(`UPDATE survey_activity SET status='completed', completed_at=NOW(), reward=$1 WHERE user_id=$2 AND survey_id=$3`, [amount, Number(userId), `cpx-${q.offer_id || q.survey_id || ''}`]);\n        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [Number(userId), amount, `CPX Research survey ${transactionId}`, transactionId]);\n      } else if (status === '2' && amount > 0) {\n        await client.query(`UPDATE users SET balance=GREATEST(0,balance-$1) WHERE id=$2`, [amount, Number(userId)]);\n        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [Number(userId), -amount, `CPX Research reversal ${transactionId}`, transactionId]);\n      }\n      await client.query('COMMIT');\n      res.status(200).send('ok');\n    } catch (e) { await client.query('ROLLBACK'); throw e; } finally { client.release(); }\n  } catch (e) { console.error('CPX callback:', e); res.status(500).send('error'); }\n});\n\n// BitLabs callback endpoint. Configure the callback/signature fields from the\n// BitLabs publisher dashboard before enabling reward crediting.\napp.post('/api/providers/bitlabs/callback', express.json(), async (req, res) => {\n  // Kept intentionally non-crediting until the BitLabs callback secret/configuration\n  // supplied by BitLabs is installed. This prevents forged reward requests.\n  if (!process.env.BITLABS_API_TOKEN) return res.status(503).send('BitLabs not configured');\n  res.status(202).json({ received: true, message: 'Callback endpoint ready; configure BitLabs callback verification before crediting.' });\n});\n\n// ---------- Earnings, withdrawals, profile and administration ----------
+// ---------- Provider callbacks ----------
+// CPX callback. Keep the provider secret server-side and require a valid signature
+// before any wallet credit is created.
+app.all('/api/providers/cpx/postback', async (req, res) => {
+  try {
+    if (!process.env.CPX_SECURE_HASH) return res.status(503).send('CPX secure hash not configured');
+    const q = { ...req.query, ...req.body };
+    const status = String(q.status || '');
+    const transactionId = String(q.trans_id || q.transaction_id || '').trim();
+    const userId = String(q.user_id || q.subid || q.ext_user_id || '').trim();
+    const amount = Number(q.amount_local ?? q.amount_usd ?? q.amount ?? 0);
+    const secureHash = String(q.secure_hash || '').trim().toLowerCase();
+    if (!transactionId || !userId || !/^\d+$/.test(userId) || !Number.isFinite(amount) || amount < 0 || !secureHash) {
+      return res.status(400).send('invalid');
+    }
+
+    const expected = crypto.createHash('md5').update(`${transactionId}-${process.env.CPX_SECURE_HASH}`).digest('hex');
+    if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) {
+      return res.status(403).send('invalid signature');
+    }
+
+    const numericUserId = Number(userId);
+    const user = await pool.query('SELECT id FROM users WHERE id=$1', [numericUserId]);
+    if (!user.rows[0]) return res.status(404).send('user not found');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const exists = await client.query(
+        'SELECT id FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE',
+        ['cpx', transactionId]
+      );
+      if (exists.rows[0]) {
+        await client.query('COMMIT');
+        return res.status(200).send('ok');
+      }
+
+      const surveyId = String(q.offer_id || q.survey_id || '');
+      await client.query(
+        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        ['cpx', transactionId, numericUserId, surveyId, status, amount, q]
+      );
+
+      if (status === '1' && amount > 0) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amount, numericUserId]);
+        if (surveyId) {
+          await client.query(
+            `UPDATE survey_activity SET status='completed', completed_at=NOW(), reward=$1
+             WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`,
+            [amount, numericUserId, `cpx-${surveyId}`]
+          );
+        }
+        await client.query(
+          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
+           VALUES ($1,'earning',$2,$3,$4)`,
+          [numericUserId, amount, `CPX Research survey ${transactionId}`, transactionId]
+        );
+      } else if (status === '2' && amount > 0) {
+        // A reversal is a negative ledger entry. Do not silently clamp the balance:
+        // finance discrepancies must remain visible to the administrator.
+        await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [amount, numericUserId]);
+        await client.query(
+          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
+           VALUES ($1,'adjustment',$2,$3,$4)`,
+          [numericUserId, -amount, `CPX Research reversal ${transactionId}`, transactionId]
+        );
+      }
+
+      await client.query('COMMIT');
+      return res.status(200).send('ok');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('CPX callback:', e);
+    return res.status(500).send('error');
+  }
+});
+
+// BitLabs S2S callback. BitLabs documents an HMAC-SHA1 hash over the complete
+// callback URL. Do not credit anything until the app secret is configured.
+app.all('/api/providers/bitlabs/callback', async (req, res) => {
+  try {
+    const secret = process.env.BITLABS_APP_SECRET;
+    if (!secret) return res.status(503).send('BitLabs callback secret not configured');
+
+    const rawUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    const unsignedUrl = rawUrl.replace(/([?&])hash=[^&]*/i, '$1').replace(/[?&]$/, '');
+    const suppliedHash = String(req.query.hash || req.body?.hash || '').trim().toLowerCase();
+    const expectedHash = crypto.createHmac('sha1', secret).update(unsignedUrl).digest('hex');
+    if (!suppliedHash || suppliedHash.length !== expectedHash.length || !crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(expectedHash))) {
+      return res.status(403).send('invalid signature');
+    }
+
+    const userId = String(req.query.uid || req.body?.uid || '').trim();
+    const transactionId = String(req.query.tx || req.query.transaction_id || req.body?.tx || req.body?.transaction_id || '').trim();
+    const activityType = String(req.query.activity_type || req.body?.activity_type || '').toUpperCase();
+    const amountUsd = Number(req.query.usd || req.query.value_usd || req.body?.usd || req.body?.value_usd || 0);
+    if (!/^\d+$/.test(userId) || !transactionId || !Number.isFinite(amountUsd) || amountUsd < 0) return res.status(400).send('invalid');
+
+    const numericUserId = Number(userId);
+    const user = await pool.query('SELECT id FROM users WHERE id=$1', [numericUserId]);
+    if (!user.rows[0]) return res.status(404).send('user not found');
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const exists = await client.query(
+        'SELECT id FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE',
+        ['bitlabs', transactionId]
+      );
+      if (exists.rows[0]) {
+        await client.query('COMMIT');
+        return res.status(200).send('ok');
+      }
+      await client.query(
+        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,raw_payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        ['bitlabs', transactionId, numericUserId, String(req.query.survey_id || req.body?.survey_id || ''), activityType || 'UNKNOWN', amountUsd, { query: req.query, body: req.body }]
+      );
+      if ((activityType === 'COMPLETE' || activityType === 'RECONCILIATION') && amountUsd > 0) {
+        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [amountUsd, numericUserId]);
+        await client.query(
+          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
+           VALUES ($1,'earning',$2,$3,$4)`,
+          [numericUserId, amountUsd, `BitLabs survey ${transactionId}`, transactionId]
+        );
+      }
+      await client.query('COMMIT');
+      return res.status(200).send('ok');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error('BitLabs callback:', e);
+    return res.status(500).send('error');
+  }
+});
+
+// ---------- Earnings, withdrawals, profile and administration ----------
 app.get("/api/earnings", requireAuth, async (req, res) => {
   try {
     const user = await getUserById(req.session.userId);
-    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status='pending'`, [req.session.userId]);
+    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved')`, [req.session.userId]);
     const tx = await pool.query(`SELECT id, type, amount, description, reference_id, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
     const pendingAmount = Number(pending.rows[0].amount || 0);
     res.json({ total: Number(user.balance || 0), pending: pendingAmount, available: Math.max(0, Number(user.balance || 0) - pendingAmount), transactions: tx.rows, minimumWithdrawal: getMinimumWithdrawal() });
@@ -730,7 +941,7 @@ app.post("/api/withdrawals", requireAuth, async (req, res) => {
     if (!method || !details) return res.status(400).json({ error: "Payment method and payment details are required." });
     await client.query('BEGIN');
     const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [req.session.userId]);
-    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status='pending'`, [req.session.userId]);
+    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved')`, [req.session.userId]);
     const available = Number(user.rows[0]?.balance || 0) - Number(pending.rows[0]?.amount || 0);
     if (amount > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Insufficient available balance." }); }
     const result = await client.query(`INSERT INTO withdrawals (user_id, amount, method, details) VALUES ($1,$2,$3,$4) RETURNING id, amount, method, status, created_at`, [req.session.userId, amount.toFixed(2), method, details]);
@@ -746,6 +957,10 @@ app.put("/api/profile", requireAuth, async (req, res) => {
     const paymentMethod = String(req.body.paymentMethod || '').trim();
     const paymentDetails = String(req.body.paymentDetails || '').trim();
     if (!fullName) return res.status(400).json({ error: "Full name is required." });
+    const current = await getUserById(req.session.userId);
+    if (isDesignatedAdmin(current) && fullName !== getAdminIdentity().name) {
+      return res.status(400).json({ error: "The designated administrator name cannot be changed." });
+    }
     const result = await pool.query(`UPDATE users SET full_name=$1, phone=$2, payment_method=$3, payment_details=$4 WHERE id=$5 RETURNING id, full_name, email, balance, role, phone, payment_method, payment_details, created_at`, [fullName, phone || null, paymentMethod || null, paymentDetails || null, req.session.userId]);
     res.json({ message: "Profile updated.", user: result.rows[0] });
   } catch (e) { console.error(e); res.status(500).json({ error: "Unable to update profile." }); }
@@ -755,7 +970,7 @@ app.get("/api/admin/overview", requireAdmin, async (req, res) => {
   try {
     const [users, pending, surveys, providers] = await Promise.all([
       pool.query(`SELECT COUNT(*)::int AS count FROM users`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status='pending'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved')`),
       pool.query(`SELECT COUNT(*)::int AS count FROM survey_activity WHERE status='completed'`),
       pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`)
     ]);
@@ -784,9 +999,9 @@ app.post("/api/admin/withdrawals/:id/process", requireAdmin, async (req, res) =>
     if (!wr.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: "Withdrawal not found." }); }
     const w = wr.rows[0];
     if (w.status === 'paid' || w.status === 'rejected') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal is already finalized." }); }
-    if (status === 'approved') {
-      // Approval reserves the request but does not remove funds. Funds are removed only when marked paid.
-    }
+    if (status === 'approved' && w.status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: "Only pending withdrawals can be approved." }); }
+    if (status === 'rejected' && w.status !== 'pending' && w.status !== 'approved') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal cannot be rejected in its current state." }); }
+    if (status === 'paid' && w.status !== 'approved') { await client.query('ROLLBACK'); return res.status(400).json({ error: "A withdrawal must be approved before it can be marked paid." }); }
     if (status === 'paid') {
       const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
       if (Number(user.rows[0].balance) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "User no longer has enough balance to pay this withdrawal." }); }
@@ -820,6 +1035,8 @@ app.get("/api/admin/providers", requireAdmin, async (req,res)=>{
 
 async function startServer() {
   try {
+    if (isProduction && !process.env.DATABASE_URL) throw new Error("DATABASE_URL is required in production.");
+    if (isProduction && !process.env.SESSION_SECRET) throw new Error("SESSION_SECRET is required in production.");
     await initializeDatabase();
 
     app.listen(PORT, () => {

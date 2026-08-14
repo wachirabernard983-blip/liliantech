@@ -22,6 +22,8 @@ services:
         sync: false
       - key: BITLABS_API_TOKEN
         sync: false
+      - key: BITLABS_APP_SECRET
+        sync: false
       - key: CINT_JWT
         sync: false
       - key: DYNATA_ACCESS_KEY
