@@ -83,7 +83,7 @@
     async function loadDashboard() {
       try {
         const response = await fetch("/api/me", {
-          credentials: "same-origin",
+          credentials: "include",
           cache: "no-store"
         });
 
@@ -121,7 +121,8 @@
       try {
         await fetch("/api/logout", {
           method: "POST",
-          credentials: "same-origin"
+          credentials: "include",
+          cache: "no-store"
         });
       } finally {
         window.location.replace("/");
