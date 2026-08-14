@@ -9,9 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const isProduction = process.env.NODE_ENV === "production";
 
-if (isProduction) {
-  app.set("trust proxy", 1);
-}
+app.set("trust proxy", 1);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -25,7 +23,17 @@ const PgSession = connectPgSimple(session);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Never cache application pages; navigation must always reflect the current session.
+app.use((req, res, next) => {
+  if (req.path.endsWith(".html") || req.path === "/") {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.set("Pragma", "no-cache");
+  }
+  next();
+});
+
 app.use(session({
+  name: "liliantech.sid",
   store: new PgSession({
     pool,
     tableName: "user_sessions",
@@ -36,6 +44,7 @@ app.use(session({
   saveUninitialized: false,
   rolling: true,
   cookie: {
+    path: "/",
     httpOnly: true,
     secure: isProduction,
     sameSite: "lax",
@@ -113,6 +122,7 @@ async function getUserById(id) {
 }
 
 app.get("/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
   res.json({
     status: "ok",
     app: "LilianTech"
@@ -120,6 +130,8 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/api/me", async (req, res) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.set("Pragma", "no-cache");
   try {
     if (!req.session.userId) {
       return res.status(401).json({

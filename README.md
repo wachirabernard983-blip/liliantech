@@ -57,3 +57,7 @@ After deployment, test this flow:
 4. Refresh the dashboard. Your account should remain signed in.
 5. Open `/` and confirm the navigation shows `Dashboard`.
 6. Log out and confirm the session is removed.
+
+
+### Session/navigation fix
+Application pages are served with no-cache headers and the session cookie is scoped to `/` so moving between Home and Dashboard does not create a new anonymous session. The homepage checks `/api/me` without cache.
