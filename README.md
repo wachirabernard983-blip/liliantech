@@ -40,3 +40,20 @@ npm install
 ```text
 npm start
 ```
+
+
+## Authentication deployment
+
+Set these Render environment variables:
+
+- `DATABASE_URL` — your PostgreSQL connection string
+- `SESSION_SECRET` — a long random secret
+
+After deployment, test this flow:
+
+1. Create an account.
+2. Log in.
+3. Confirm you are sent to `/dashboard.html`, not `/`.
+4. Refresh the dashboard. Your account should remain signed in.
+5. Open `/` and confirm the navigation shows `Dashboard`.
+6. Log out and confirm the session is removed.
