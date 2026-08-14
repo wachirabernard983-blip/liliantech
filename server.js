@@ -52,6 +52,22 @@ app.use(session({
   }
 }));
 
+// Page navigation is session-aware. Authenticated members stay inside the dashboard
+// when they click Home, rather than being treated as logged out by the public homepage.
+app.get("/", (req, res, next) => {
+  if (req.session && req.session.userId) {
+    return res.redirect("/dashboard.html");
+  }
+  next();
+});
+
+app.get("/surveys", (req, res) => {
+  if (req.session && req.session.userId) {
+    return res.redirect("/dashboard.html#surveys");
+  }
+  res.redirect("/#surveys");
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 async function initializeDatabase() {
@@ -304,7 +320,8 @@ app.post("/api/logout", (req, res) => {
       });
     }
 
-    res.clearCookie("connect.sid", {
+    res.clearCookie("liliantech.sid", {
+      path: "/",
       httpOnly: true,
       secure: isProduction,
       sameSite: "lax"
