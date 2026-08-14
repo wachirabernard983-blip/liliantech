@@ -82,6 +82,20 @@ async function initializeDatabase() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS survey_activity (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      survey_id VARCHAR(120) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      reward NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      UNIQUE(user_id, survey_id)
+    );
+  `);
+
   console.log("Database initialized successfully.");
 }
 
@@ -350,6 +364,159 @@ app.get("/api/account", requireAuth, async (req, res) => {
     res.status(500).json({
       error: "Unable to load account."
     });
+  }
+});
+
+
+function getSurveyInventory() {
+  return require(path.join(__dirname, "data", "surveys.json"));
+}
+
+function getSurveyById(surveyId) {
+  return getSurveyInventory().find((survey) => survey.id === surveyId);
+}
+
+app.get("/api/dashboard", requireAuth, async (req, res) => {
+  try {
+    const user = await getUserById(req.session.userId);
+
+    if (!user) {
+      return res.status(401).json({ error: "Account not found." });
+    }
+
+    const activity = await pool.query(
+      `SELECT survey_id, title, reward, status, started_at, completed_at
+       FROM survey_activity
+       WHERE user_id = $1
+       ORDER BY COALESCE(completed_at, started_at) DESC`,
+      [req.session.userId]
+    );
+
+    const completed = activity.rows.filter((item) => item.status === "completed");
+    const inProgress = activity.rows.filter((item) => item.status === "in_progress");
+    const completedEarnings = completed.reduce(
+      (total, item) => total + Number(item.reward || 0),
+      0
+    );
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      user,
+      stats: {
+        available: getSurveyInventory().filter(
+          (survey) => !activity.rows.some((item) => item.survey_id === survey.id)
+        ).length,
+        inProgress: inProgress.length,
+        completed: completed.length,
+        completedEarnings
+      },
+      activity: activity.rows
+    });
+  } catch (error) {
+    console.error("Dashboard error:", error);
+    res.status(500).json({ error: "Unable to load dashboard." });
+  }
+});
+
+app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
+  try {
+    const survey = getSurveyById(req.params.surveyId);
+
+    if (!survey) {
+      return res.status(404).json({ error: "Survey not found." });
+    }
+
+    const existing = await pool.query(
+      `SELECT status FROM survey_activity
+       WHERE user_id = $1 AND survey_id = $2`,
+      [req.session.userId, survey.id]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.json({
+        message: "Survey already started.",
+        status: existing.rows[0].status
+      });
+    }
+
+    const reward = Number(String(survey.reward).replace(/[^0-9.]/g, "")) || 0;
+
+    await pool.query(
+      `INSERT INTO survey_activity
+       (user_id, survey_id, title, reward, status)
+       VALUES ($1, $2, $3, $4, 'in_progress')`,
+      [req.session.userId, survey.id, survey.title, reward]
+    );
+
+    res.status(201).json({
+      message: "Survey started.",
+      status: "in_progress"
+    });
+  } catch (error) {
+    console.error("Start survey error:", error);
+    res.status(500).json({ error: "Unable to start survey." });
+  }
+});
+
+app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const survey = getSurveyById(req.params.surveyId);
+
+    if (!survey) {
+      return res.status(404).json({ error: "Survey not found." });
+    }
+
+    await client.query("BEGIN");
+
+    const activity = await client.query(
+      `SELECT id, reward, status
+       FROM survey_activity
+       WHERE user_id = $1 AND survey_id = $2
+       FOR UPDATE`,
+      [req.session.userId, survey.id]
+    );
+
+    if (activity.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Start the survey before completing it." });
+    }
+
+    if (activity.rows[0].status === "completed") {
+      await client.query("ROLLBACK");
+      return res.json({ message: "Survey already completed.", status: "completed" });
+    }
+
+    const reward = Number(activity.rows[0].reward || 0);
+
+    await client.query(
+      `UPDATE survey_activity
+       SET status = 'completed', completed_at = NOW()
+       WHERE id = $1`,
+      [activity.rows[0].id]
+    );
+
+    await client.query(
+      `UPDATE users
+       SET balance = balance + $1
+       WHERE id = $2`,
+      [reward, req.session.userId]
+    );
+
+    await client.query("COMMIT");
+
+    res.json({
+      message: "Survey completed and reward added.",
+      status: "completed",
+      reward
+    });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Complete survey error:", error);
+    res.status(500).json({ error: "Unable to complete survey." });
+  } finally {
+    client.release();
   }
 });
 

@@ -61,3 +61,16 @@ After deployment, test this flow:
 
 ### Session/navigation fix
 Application pages are served with no-cache headers and the session cookie is scoped to `/` so moving between Home and Dashboard does not create a new anonymous session. The homepage checks `/api/me` without cache.
+
+
+## Dashboard
+
+The authenticated dashboard now includes:
+- Account information and live balance
+- Available / In Progress / Completed survey states
+- Survey start and completion actions
+- Survey earnings added to the member balance on completion
+- Survey history
+- Logout remains the only action that destroys the session
+
+The authentication/session configuration was preserved.
