@@ -1,139 +1,39 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <title>Create Account — LilianTech</title>
-
+  <title>Create account — LilianTech</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
-
-<body>
-
-  <main class="section">
-
-    <div
-      class="container card feature"
-      style="max-width:440px"
-    >
-
-      <a class="brand" href="/">
-        Lilian<span>Tech</span>
-      </a>
-
-      <h1>Create your account</h1>
-
-      <p class="muted">
-        Join LilianTech and discover research opportunities.
-      </p>
-
-      <form id="registerForm">
-
-        <label for="fullName">Full name</label>
-
-        <input
-          id="fullName"
-          name="fullName"
-          style="width:100%;padding:13px;margin:7px 0"
-          type="text"
-          placeholder="Full name"
-          required
-        >
-
-        <label for="email">Email</label>
-
-        <input
-          id="email"
-          name="email"
-          style="width:100%;padding:13px;margin:7px 0"
-          type="email"
-          placeholder="Email"
-          required
-        >
-
-        <label for="password">Password</label>
-
-        <input
-          id="password"
-          name="password"
-          style="width:100%;padding:13px;margin:7px 0"
-          type="password"
-          placeholder="At least 8 characters"
-          minlength="8"
-          required
-        >
-
-        <button
-          class="button primary"
-          style="width:100%;border:0;cursor:pointer"
-          type="submit"
-        >
-          Create account
-        </button>
-
-      </form>
-
-      <p id="message" class="muted"></p>
-
-      <p class="muted">
-        Already registered?
-        <a href="/login.html">Sign in</a>
-      </p>
-
+<body class="auth-page">
+  <header class="site-header auth-header">
+    <div class="container nav">
+      <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+      <a class="button secondary" href="/login.html">Sign in</a>
     </div>
-
+  </header>
+  <main class="auth-main">
+    <div class="container auth-container">
+      <section class="auth-card card">
+        <div class="eyebrow">GET STARTED</div>
+        <h1>Create your LilianTech account.</h1>
+        <p class="muted">Join free and see the opportunities available to you.</p>
+        <form id="registerForm" class="auth-form">
+          <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Your full name" autocomplete="name" required></div>
+          <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
+          <div><label for="password">Password</label><input id="password" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required></div>
+          <button class="button primary" type="submit">Create account</button>
+        </form>
+        <p id="message" class="form-message muted" aria-live="polite"></p>
+        <p class="auth-switch muted">Already registered? <a href="/login.html">Sign in</a></p>
+      </section>
+    </div>
   </main>
-
+  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span></div></footer>
   <script>
-    const form = document.getElementById("registerForm");
-    const message = document.getElementById("message");
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-
-      message.textContent = "Creating your account...";
-
-      const fullName = document.getElementById("fullName").value;
-      const email = document.getElementById("email").value;
-      const password = document.getElementById("password").value;
-
-      try {
-        const response = await fetch("/api/register", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            fullName,
-            email,
-            password
-          })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          message.textContent = data.error || "Unable to create account.";
-          return;
-        }
-
-        message.textContent =
-          "Account created successfully. Redirecting to login...";
-
-        setTimeout(() => {
-          window.location.href = "/login.html";
-        }, 1200);
-
-      } catch (error) {
-        console.error(error);
-        message.textContent =
-          "Unable to connect to LilianTech. Please try again.";
-      }
-    });
+    const form=document.getElementById('registerForm');const message=document.getElementById('message');
+    form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Creating your account…';const fullName=document.getElementById('fullName').value;const email=document.getElementById('email').value;const password=document.getElementById('password').value;try{const response=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fullName,email,password})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Unable to create account.';return;}window.location.replace('/login.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});
   </script>
-
 </body>
-
 </html>

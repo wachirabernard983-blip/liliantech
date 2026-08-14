@@ -1,117 +1,38 @@
 <!doctype html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login — LilianTech</title>
+  <title>Sign in — LilianTech</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
-
-<body>
-
-  <main class="section">
-    <div class="container card feature" style="max-width:440px">
-
-      <a class="brand" href="/">
-        Lilian<span>Tech</span>
-      </a>
-
-      <h1>Welcome back</h1>
-
-      <p class="muted">
-        Sign in to your LilianTech account.
-      </p>
-
-      <form id="loginForm">
-
-        <label for="email">Email</label>
-        <input
-          id="email"
-          name="email"
-          style="width:100%;padding:13px;margin:7px 0"
-          type="email"
-          placeholder="Email"
-          autocomplete="email"
-          required
-        >
-
-        <label for="password">Password</label>
-        <input
-          id="password"
-          name="password"
-          style="width:100%;padding:13px;margin:7px 0 15px"
-          type="password"
-          placeholder="Password"
-          autocomplete="current-password"
-          required
-        >
-
-        <button
-          class="button primary"
-          style="width:100%;border:0;cursor:pointer"
-          type="submit"
-        >
-          Sign in
-        </button>
-
-      </form>
-
-      <p id="message" class="muted"></p>
-
-      <p class="muted">
-        New here?
-        <a href="/register.html">Create an account</a>
-      </p>
-
+<body class="auth-page">
+  <header class="site-header auth-header">
+    <div class="container nav">
+      <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+      <a class="button secondary" href="/register.html">Create account</a>
+    </div>
+  </header>
+  <main class="auth-main">
+    <div class="container auth-container">
+      <section class="auth-card card">
+        <div class="eyebrow">WELCOME BACK</div>
+        <h1>Sign in to LilianTech.</h1>
+        <p class="muted">Pick up where you left off.</p>
+        <form id="loginForm" class="auth-form">
+          <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
+          <div><label for="password">Password</label><input id="password" name="password" type="password" placeholder="Your password" autocomplete="current-password" required></div>
+          <button class="button primary" type="submit">Sign in</button>
+        </form>
+        <p id="message" class="form-message muted" aria-live="polite"></p>
+        <p class="auth-switch muted">New here? <a href="/register.html">Create an account</a></p>
+      </section>
     </div>
   </main>
-
+  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span></div></footer>
   <script>
-    const form = document.getElementById("loginForm");
-    const message = document.getElementById("message");
-
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-
-      message.textContent = "Signing in...";
-
-      const email = document.getElementById("email").value;
-      const password = document.getElementById("password").value;
-
-      try {
-        const response = await fetch("/api/login", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          credentials: "include",
-          cache: "no-store",
-          body: JSON.stringify({ email, password })
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          message.textContent =
-            data.error || "Invalid email or password.";
-          return;
-        }
-
-        message.textContent =
-          "Login successful. Redirecting...";
-
-        setTimeout(() => {
-          window.location.href = "/dashboard.html";
-        }, 500);
-
-      } catch (error) {
-        console.error(error);
-        message.textContent =
-          "Unable to connect to LilianTech. Please try again.";
-      }
-    });
+    const form=document.getElementById('loginForm');const message=document.getElementById('message');
+    form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Signing in…';const email=document.getElementById('email').value;const password=document.getElementById('password').value;try{const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',cache:'no-store',body:JSON.stringify({email,password})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Invalid email or password.';return;}window.location.replace('/dashboard.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});
   </script>
-
 </body>
 </html>

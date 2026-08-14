@@ -14,3 +14,33 @@ html{scroll-behavior:smooth;scroll-padding-top:88px;overflow-x:hidden}body{overf
 @media(max-width:850px){.site-header .nav{padding:0 4%}.site-header nav{display:none}.mobile-menu{display:block}.mobile-nav{display:flex;flex-direction:column;gap:4px;padding:8px 4%;border-top:1px solid #eceef3;background:#fff}.mobile-nav[hidden]{display:none}.mobile-nav a{padding:12px 4px}.mobile-nav .button{margin:4px 0 8px;text-align:center}.shell{min-width:0}.side{top:74px}.content{padding-top:26px}}
 @media(max-width:640px){html{scroll-padding-top:76px}.container{width:min(100% - 28px,1120px)}.home-hero{padding:58px 0 64px}.hero-copy h1{font-size:clamp(42px,13vw,58px);letter-spacing:-2.6px}.hero-copy>p{font-size:17px;line-height:1.6}.hero-points{gap:10px 15px;font-size:13px}.wallet-stage{min-height:360px}.wallet-card{padding:22px;border-radius:20px}.wallet-amount{font-size:45px;margin:28px 0 20px}.float-one{left:-2px;bottom:18px}.float-two{right:-2px;top:22px}.float-card{min-width:160px;padding:10px 12px}.how-grid{gap:12px}.step{min-height:0;padding:23px}.section{padding:58px 0}.payout-pills{grid-template-columns:1fr}.cta{padding:30px 24px;align-items:flex-start;flex-direction:column}.cta .button{width:100%}.footer-inner{align-items:flex-start;flex-direction:column}.content{padding-left:14px;padding-right:14px}.side{top:74px;padding:8px 12px}.side a{padding:10px 12px}.survey-player{z-index:100}.survey-player-card{width:100vw;height:100dvh}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+
+/* LilianTech V5 — shared page system */
+.auth-page{min-height:100vh;display:flex;flex-direction:column;background:linear-gradient(180deg,#fafaff 0%,#f7f8fc 100%)}
+.auth-header{position:sticky;top:0;z-index:40}
+.auth-header .nav{min-height:74px}
+.auth-main{flex:1;display:flex;align-items:center;padding:clamp(48px,8vw,92px) 0}
+.auth-container{display:flex;justify-content:center}
+.auth-card{width:min(100%,470px);padding:34px}
+.auth-card h1{font-size:clamp(32px,5vw,44px);line-height:1.05;letter-spacing:-1.8px;margin:12px 0 10px}
+.auth-card>.muted{margin:0 0 28px}
+.auth-form{display:grid;gap:18px}
+.auth-form input{min-height:50px}
+.auth-form .button{width:100%;min-height:50px;border:0}
+.form-message{min-height:24px;margin:14px 0 0}
+.auth-switch{margin:20px 0 0!important;text-align:center}
+.auth-switch a{color:#5b50d6;font-weight:750}
+.auth-page footer{margin-top:auto}
+
+/* Shared spacing and navigation consistency */
+.site-header + .shell .side{top:72px}
+main>section:first-child h1{margin-top:0}
+.content>section>h1{font-size:clamp(34px,4.5vw,52px);line-height:1.05;letter-spacing:-2px;margin:0 0 12px}
+.content>section>h1 + .muted{max-width:760px;margin:0 0 26px}
+.content>.card{box-shadow:0 12px 35px rgba(31,35,60,.045)}
+@media(max-width:850px){.site-header .nav{min-height:70px}.site-header + .shell .side{top:70px}.auth-main{padding:40px 0}.auth-card{padding:26px 22px}}
+@media(max-width:560px){.auth-card{padding:24px 18px}.auth-main{padding:28px 0}.auth-header .button{min-height:42px;padding:10px 13px}.footer-inner{padding-bottom:4px}}
+
+/* V5 admin consistency */
+.admin-nav{display:flex;align-items:center;gap:14px;min-width:0}.admin-wrap{padding-top:34px;padding-bottom:70px}.admin-wrap>h1{font-size:clamp(34px,4.5vw,52px);line-height:1.05;letter-spacing:-2px;margin:30px 0 8px}.admin-account{box-shadow:0 10px 30px rgba(31,35,60,.045)}
+@media(max-width:560px){.admin-nav .muted{display:none}.admin-wrap{padding-top:22px}.admin-wrap>h1{margin-top:24px}.admin-nav .button{min-height:42px;padding:10px 13px}}
