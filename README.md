@@ -50,5 +50,6 @@ Never add demo survey inventory or test earnings to production. Never enter gues
 TheoremReach configuration:
 - `THEOREMREACH_API_KEY` (stored server-side for future/approved API flows)
 - `THEOREMREACH_SECRET_KEY`
-- `THEOREMREACH_ENTRY_URL`
+- `THEOREMREACH_ENTRY_URL` (legacy hosted entry; no longer used by the LilianTech survey wall)
+- `THEOREMREACH_SURVEYS_API_URL` (set only to the exact native Surveys API endpoint supplied/approved by TheoremReach; may use `{api_key}`, `{user_id}`, `{ip}` tokens)
 - `THEOREMREACH_EXCHANGE_RATE` (default 100)

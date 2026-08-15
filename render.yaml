@@ -32,6 +32,8 @@ services:
         sync: false
       - key: THEOREMREACH_ENTRY_URL
         sync: false
+      - key: THEOREMREACH_SURVEYS_API_URL
+        sync: false
       - key: CPX_SECURE_HASH
         sync: false
       - key: BITLABS_API_TOKEN

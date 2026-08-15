@@ -652,35 +652,53 @@ async function getLiveProviderSurveys(user, req) {
     }
   }
 
-  // TheoremReach web integration. The API key remains server-side; the browser only
-  // receives our authenticated same-origin entry route. The provider then returns
-  // the user's ID and transaction ID in the server-side reward callback.
-  if (process.env.THEOREMREACH_API_KEY) {
+  // TheoremReach native inventory mode.
+  // IMPORTANT: do not expose the hosted TheoremReach Reward Center as a LilianTech
+  // survey card. That experience can show TheoremReach branding/login and is not the
+  // white-label/native flow requested for LilianTech. When TheoremReach provides the
+  // exact Surveys API endpoint for this publisher, set THEOREMREACH_SURVEYS_API_URL
+  // in Render. The URL may contain {api_key}, {user_id} and {ip} replacement tokens.
+  // We intentionally do not guess an undocumented endpoint.
+  if (process.env.THEOREMREACH_SURVEYS_API_URL && process.env.THEOREMREACH_API_KEY) {
     try {
-      const tr = await fetch(
-        `https://api.theoremreach.com/api/publishers/v1/user_details?api_key=${encodeURIComponent(process.env.THEOREMREACH_API_KEY)}&user_id=${encodeURIComponent(String(user.id))}&ip=${encodeURIComponent(ip || '0.0.0.0')}`,
-        { signal: AbortSignal.timeout(8000) }
-      );
+      const template = String(process.env.THEOREMREACH_SURVEYS_API_URL).trim();
+      const apiUrl = template
+        .replaceAll('{api_key}', encodeURIComponent(String(process.env.THEOREMREACH_API_KEY)))
+        .replaceAll('{user_id}', encodeURIComponent(String(user.id)))
+        .replaceAll('{ip}', encodeURIComponent(ip || '0.0.0.0'));
+      const tr = await fetch(apiUrl, {
+        signal: AbortSignal.timeout(10000),
+        headers: { accept: 'application/json' }
+      });
       if (tr.ok) {
-        const details = await tr.json();
-        if (details.surveys_available === true) {
+        const data = await tr.json();
+        const list = Array.isArray(data) ? data : (data.surveys || data.data || data.results || data.items || []);
+        for (const x of (Array.isArray(list) ? list : [])) {
+          const externalId = String(x.id || x.survey_id || x.campaign_id || x.offer_id || '').trim();
+          const href = String(x.click_url || x.clickUrl || x.survey_url || x.entry_url || x.href || x.url || '').trim();
+          if (!externalId || !href) continue;
+          const publisherRevenue = Number(x.payout_publisher_usd ?? x.publisher_payout_usd ?? x.payout ?? x.cpi ?? 0);
+          const explicitReward = Number(x.user_reward_usd ?? x.reward_usd);
+          const reward = Number.isFinite(explicitReward) ? explicitReward : calculateUserReward('theoremreach', publisherRevenue);
           surveys.push({
-            id: 'theoremreach-router',
-            externalId: 'theoremreach',
-            title: 'TheoremReach Surveys',
-            minutes: 5,
-            reward: 'Earn Coins',
-            publisherRevenue: 0,
-            provider: 'TheoremReach',
+            id: `theoremreach-${externalId}`,
+            externalId,
+            title: String(x.title || x.name || 'Market Research Survey'),
+            minutes: Number(x.loi || x.length_of_interview || x.minutes || x.duration || 0),
+            reward: `$${Math.max(0, reward).toFixed(2)}`,
+            publisherRevenue: Number.isFinite(publisherRevenue) ? publisherRevenue : 0,
+            provider: 'Research Partner',
             providerId: 'theoremreach',
-            href: '/api/providers/theoremreach/entry',
+            href,
             source: 'live',
             live: true
           });
         }
+      } else {
+        console.error('TheoremReach Surveys API:', tr.status, await tr.text().catch(() => ''));
       }
     } catch (err) {
-      console.error('TheoremReach availability:', err);
+      console.error('TheoremReach Surveys API:', err);
     }
   }
 
