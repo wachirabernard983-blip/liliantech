@@ -754,9 +754,22 @@ app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
     );
 
     if (existing.rows.length > 0) {
+      // Allow users to resume a provider survey that was already marked in progress.
+      // TheoremReach needs a fresh authenticated entry URL so the Continue button
+      // actually launches the survey instead of silently doing nothing.
+      if (survey.providerId === 'theoremreach') {
+        return res.json({
+          message: "Continuing your TheoremReach survey.",
+          status: existing.rows[0].status,
+          redirectUrl: survey.href,
+          provider: survey.provider
+        });
+      }
       return res.json({
         message: "Survey already started.",
-        status: existing.rows[0].status
+        status: existing.rows[0].status,
+        redirectUrl: survey.href,
+        provider: survey.provider
       });
     }
 
