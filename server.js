@@ -306,14 +306,18 @@ function theoremReachHashValid(req) {
 
 function theoremReachEntryUrl(userId) {
   const template = String(process.env.THEOREMREACH_ENTRY_URL || '').trim();
-  if (!template) return '';
+  const apiKey = String(process.env.THEOREMREACH_API_KEY || '').trim();
+  const transactionId = `lt-${userId}-${Date.now()}`;
+  if (!template && !apiKey) return '';
+  const source = template || 'https://theoremreach.com/respondent_entry/direct?api_key={api_key}&user_id={user_id}&transaction_id={transaction_id}';
   const replacements = {
+    '{api_key}': encodeURIComponent(apiKey),
     '{user_id}': encodeURIComponent(String(userId)),
-    '{external_transaction_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`),
-    '{session_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`),
-    '{transaction_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`)
+    '{external_transaction_id}': encodeURIComponent(transactionId),
+    '{session_id}': encodeURIComponent(transactionId),
+    '{transaction_id}': encodeURIComponent(transactionId)
   };
-  return Object.entries(replacements).reduce((url,[token,value])=>url.split(token).join(value),template);
+  return Object.entries(replacements).reduce((url,[token,value])=>url.split(token).join(value),source);
 }
 
 function getAdminIdentity() {
@@ -648,6 +652,38 @@ async function getLiveProviderSurveys(user, req) {
     }
   }
 
+  // TheoremReach web integration. The API key remains server-side; the browser only
+  // receives our authenticated same-origin entry route. The provider then returns
+  // the user's ID and transaction ID in the server-side reward callback.
+  if (process.env.THEOREMREACH_API_KEY) {
+    try {
+      const tr = await fetch(
+        `https://api.theoremreach.com/api/publishers/v1/user_details?api_key=${encodeURIComponent(process.env.THEOREMREACH_API_KEY)}&user_id=${encodeURIComponent(String(user.id))}&ip=${encodeURIComponent(ip || '0.0.0.0')}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      if (tr.ok) {
+        const details = await tr.json();
+        if (details.surveys_available === true) {
+          surveys.push({
+            id: 'theoremreach-router',
+            externalId: 'theoremreach',
+            title: 'TheoremReach Surveys',
+            minutes: 5,
+            reward: 'Earn Coins',
+            publisherRevenue: 0,
+            provider: 'TheoremReach',
+            providerId: 'theoremreach',
+            href: '/api/providers/theoremreach/entry',
+            source: 'live',
+            live: true
+          });
+        }
+      }
+    } catch (err) {
+      console.error('TheoremReach availability:', err);
+    }
+  }
+
   // Cint and Dynata are credential/signature based. The adapters are intentionally
   // gated until approved credentials are supplied, so no fake inventory is shown.
   const result = surveys.filter(x => x.href);
@@ -725,6 +761,14 @@ app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
     }
 
     const reward = Number(String(survey.reward).replace(/[^0-9.]/g, "")) || 0;
+
+    if (survey.providerId === 'theoremreach') {
+      await pool.query(
+        `INSERT INTO survey_activity (user_id, survey_id, title, reward, status) VALUES ($1,$2,$3,$4,'in_progress')`,
+        [req.session.userId, survey.id, survey.title, 0]
+      );
+      return res.status(201).json({ message: 'TheoremReach survey center opened.', status: 'in_progress', redirectUrl: survey.href, provider: survey.provider });
+    }
 
     if (survey.live && survey.href) {
       await pool.query(
