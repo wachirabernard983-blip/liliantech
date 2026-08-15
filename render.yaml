@@ -26,6 +26,8 @@ services:
         value: "0.70"
       - key: THEOREMREACH_EXCHANGE_RATE
         value: "100"
+      - key: THEOREMREACH_API_KEY
+        sync: false
       - key: THEOREMREACH_SECRET_KEY
         sync: false
       - key: THEOREMREACH_ENTRY_URL

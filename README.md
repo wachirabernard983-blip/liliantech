@@ -48,6 +48,7 @@ Never add demo survey inventory or test earnings to production. Never enter gues
 - Official support contact: support@liliantech.online.
 
 TheoremReach configuration:
+- `THEOREMREACH_API_KEY` (stored server-side for future/approved API flows)
 - `THEOREMREACH_SECRET_KEY`
 - `THEOREMREACH_ENTRY_URL`
 - `THEOREMREACH_EXCHANGE_RATE` (default 100)
