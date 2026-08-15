@@ -23,17 +23,17 @@
           <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Your full name" autocomplete="name" required></div>
           <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
           <div><label for="password">Password</label><input id="password" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required></div>
-          <button class="button primary" type="submit">Create account</button>
+          <label class="consent-row"><input id="termsAccepted" type="checkbox" required> <span>I agree to the <a href="/terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</span></label><button class="button primary" type="submit">Create account</button>
         </form>
         <p id="message" class="form-message muted" aria-live="polite"></p>
         <p class="auth-switch muted">Already registered? <a href="/login.html">Sign in</a></p>
       </section>
     </div>
   </main>
-  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span></div></footer>
+  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a><a href="mailto:support@liliantech.online">Support</a></nav></div></footer>
   <script>
     const form=document.getElementById('registerForm');const message=document.getElementById('message');
-    form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Creating your account…';const fullName=document.getElementById('fullName').value;const email=document.getElementById('email').value;const password=document.getElementById('password').value;try{const response=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fullName,email,password})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Unable to create account.';return;}window.location.replace('/login.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});
+    form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Creating your account…';const fullName=document.getElementById('fullName').value;const email=document.getElementById('email').value;const password=document.getElementById('password').value;const termsAccepted=document.getElementById('termsAccepted').checked;const privacyAccepted=termsAccepted;try{const response=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fullName,email,password,termsAccepted,privacyAccepted})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Unable to create account.';return;}window.location.replace('/login.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});
   </script>
 </body>
 </html>

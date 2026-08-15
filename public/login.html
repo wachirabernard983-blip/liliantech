@@ -29,7 +29,7 @@
       </section>
     </div>
   </main>
-  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span></div></footer>
+  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a><a href="mailto:support@liliantech.online">Support</a></nav></div></footer>
   <script>
     const form=document.getElementById('loginForm');const message=document.getElementById('message');
     form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Signing in…';const email=document.getElementById('email').value;const password=document.getElementById('password').value;try{const response=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',cache:'no-store',body:JSON.stringify({email,password})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Invalid email or password.';return;}window.location.replace('/dashboard.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});

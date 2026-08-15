@@ -54,7 +54,7 @@
 </section>
 <section class="section final-cta"><div class="container"><div class="cta"><div><div class="eyebrow">READY?</div><h2>Start with your first survey.</h2><p>Create your account and see what's available for you.</p></div><a class="button light button-lg" href="/register.html">Get started <span>→</span></a></div></div></section>
 </main>
-<footer><div class="container footer-inner"><span>© 2026 LilianTech</span></div></footer>
+<footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a><a href="mailto:support@liliantech.online">Support</a></nav></div></footer>
 <script>
 (function(){const menu=document.getElementById('mobileMenu'),mobile=document.getElementById('mobileNav');menu?.addEventListener('click',()=>{const open=menu.getAttribute('aria-expanded')==='true';menu.setAttribute('aria-expanded',String(!open));mobile.hidden=open});mobile?.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{mobile.hidden=true;menu.setAttribute('aria-expanded','false')}));
 try{const r=fetch('/api/me',{credentials:'include',cache:'no-store'}).then(x=>x.ok?x.json():null).then(d=>{if(!d?.authenticated)return;[['loginLink','Dashboard'],['startLink','Dashboard'],['mobileLogin','Dashboard'],['mobileStart','Dashboard']].forEach(([id,text])=>{const el=document.getElementById(id);if(el){el.textContent=text;el.href='/dashboard.html'}})});r.catch(()=>{});}catch(e){}
