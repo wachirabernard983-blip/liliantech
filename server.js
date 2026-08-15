@@ -175,6 +175,8 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_accepted_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS provider_reference VARCHAR(180)`);
   await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_error TEXT`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0`);
@@ -280,6 +282,40 @@ function bitlabsPointsToUsd(points) {
   return Number((value / rate).toFixed(2));
 }
 
+
+function getTheoremReachExchangeRate() {
+  const value = Number(process.env.THEOREMREACH_EXCHANGE_RATE || 100);
+  return Number.isFinite(value) && value > 0 ? value : 100;
+}
+
+function theoremReachHashValid(req) {
+  const secret = String(process.env.THEOREMREACH_SECRET_KEY || '').trim();
+  if (!secret) return false;
+  const raw = String(req.originalUrl || '/');
+  const queryIndex = raw.indexOf('?');
+  if (queryIndex < 0) return false;
+  const basePath = raw.slice(0, queryIndex);
+  const query = raw.slice(queryIndex + 1);
+  const kept = query.split('&').filter(part => !part.toLowerCase().startsWith('hash='));
+  const baseUrl = `${basePath}${kept.length ? `?${kept.join('&')}` : ''}`;
+  const digest = crypto.createHmac('sha1', secret).update(baseUrl, 'utf8').digest('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  const supplied = String(req.query.hash || req.body?.hash || '');
+  return supplied.length > 0 && crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(supplied));
+}
+
+function theoremReachEntryUrl(userId) {
+  const template = String(process.env.THEOREMREACH_ENTRY_URL || '').trim();
+  if (!template) return '';
+  const replacements = {
+    '{user_id}': encodeURIComponent(String(userId)),
+    '{external_transaction_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`),
+    '{session_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`),
+    '{transaction_id}': encodeURIComponent(`lt-${userId}-${Date.now()}`)
+  };
+  return Object.entries(replacements).reduce((url,[token,value])=>url.split(token).join(value),template);
+}
+
 function getAdminIdentity() {
   return {
     name: String(process.env.ADMIN_NAME || "Bernard Wachira").trim(),
@@ -378,12 +414,16 @@ app.get("/api/providers", requireAdmin, (req, res) => {
 
 app.post("/api/register", authRateLimit, async (req, res) => {
   try {
-    const { fullName, email, password } = req.body;
+    const { fullName, email, password, termsAccepted, privacyAccepted } = req.body;
 
     if (!fullName || !email || !password) {
       return res.status(400).json({
         error: "Full name, email and password are required."
       });
+    }
+
+    if (!termsAccepted || !privacyAccepted) {
+      return res.status(400).json({ error: "Please accept the Terms of Service and Privacy Policy to create your account." });
     }
 
     if (password.length < 8) {
@@ -416,8 +456,8 @@ app.post("/api/register", authRateLimit, async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO users
-       (full_name, email, password_hash)
-       VALUES ($1, $2, $3)
+       (full_name, email, password_hash, terms_accepted_at, privacy_accepted_at)
+       VALUES ($1, $2, $3, NOW(), NOW())
        RETURNING id, full_name, email, balance, created_at`,
       [fullName.trim(), normalizedEmail, passwordHash]
     );
@@ -786,6 +826,82 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
 });
 
 // ---------- Provider callbacks ----------
+
+// ---------- TheoremReach publisher integration ----------
+// Rewards are credited only from a verified server-side callback. The entry URL is
+// provider-configured and kept server-side so credentials and user identifiers are
+// not exposed as application secrets in the frontend.
+app.get('/api/providers/theoremreach/entry', requireAuth, async (req, res) => {
+  const url = theoremReachEntryUrl(req.session.userId);
+  if (!url) return res.status(503).json({ error: 'TheoremReach live survey entry is not configured yet.' });
+  return res.redirect(url);
+});
+
+app.all('/api/providers/theoremreach/reward', async (req, res) => {
+  try {
+    if (String(req.query.debug || req.body?.debug || '') === 'true') return res.status(200).send('OK');
+    if (!theoremReachHashValid(req)) return res.status(403).send('Invalid signature');
+
+    const q = Object.assign({}, req.query || {}, req.body || {});
+    const txId = String(q.tx_id || '').trim();
+    const rawUserId = String(q.user_id || '').trim();
+    const reversal = String(q.reversal || '').toLowerCase() === 'true';
+    if (!txId || !rawUserId || !/^\d+$/.test(rawUserId)) return res.status(400).send('Missing transaction or user');
+
+    const userId = Number(rawUserId);
+    const appCurrencyReward = Number(q.reward || 0);
+    const grossUsd = Number(q.currency || q.reward_amount_in_dollars || 0);
+    const rewardUsd = Number((appCurrencyReward / getTheoremReachExchangeRate()).toFixed(2));
+    const effectiveReward = reversal ? -Math.abs(rewardUsd) : rewardUsd;
+    const publisherRevenue = Number.isFinite(grossUsd) ? grossUsd : 0;
+    const margin = Number((publisherRevenue - rewardUsd).toFixed(2));
+    const surveyId = String(q.offer_id || q.campaign_id || '').trim();
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const user = await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId]);
+      if (!user.rows.length) { await client.query('ROLLBACK'); return res.status(404).send('Unknown user'); }
+
+      const existing = await client.query(
+        `SELECT id,status,user_reward FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE`,
+        ['theoremreach', txId]
+      );
+      if (existing.rows.length) {
+        if (reversal && existing.rows[0].status !== 'reversed') {
+          const prior = Number(existing.rows[0].user_reward || 0);
+          await client.query(`UPDATE provider_transactions SET status='reversed', user_reward=0, margin=0, raw_payload=$1 WHERE id=$2`, [q, existing.rows[0].id]);
+          if (prior > 0) {
+            await client.query(`UPDATE users SET balance=GREATEST(0,balance-$1) WHERE id=$2`, [prior, userId]);
+            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'reversal',$2,$3,$4)`, [userId, -prior, `TheoremReach survey reversal ${txId}`, txId]);
+          }
+        }
+        await client.query('COMMIT');
+        return res.status(200).send('OK');
+      }
+
+      const status = reversal ? 'reversed' : 'completed';
+      await client.query(
+        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        ['theoremreach', txId, userId, surveyId, status, Math.abs(effectiveReward), publisherRevenue, reversal ? 0 : rewardUsd, reversal ? 0 : margin, q]
+      );
+      if (!reversal && rewardUsd > 0) {
+        await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [rewardUsd, userId]);
+        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [userId, rewardUsd, `TheoremReach survey ${txId}`, txId]);
+        if (surveyId) await client.query(`UPDATE survey_activity SET status='completed',completed_at=NOW(),reward=$1 WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`, [rewardUsd, userId, `theoremreach-${surveyId}`]);
+      }
+      await client.query('COMMIT');
+      return res.status(200).send('OK');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(()=>{});
+      throw e;
+    } finally { client.release(); }
+  } catch (error) {
+    console.error('TheoremReach callback error:', error);
+    return res.status(500).send('Callback processing failed');
+  }
+});
+
 // CPX callback. Keep the provider secret server-side and require a valid signature
 // before any wallet credit is created.
 app.all('/api/providers/cpx/postback', async (req, res) => {

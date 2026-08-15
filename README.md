@@ -3,7 +3,7 @@
 LilianTech is a global survey-rewards platform. Approved research partners supply earning opportunities; LilianTech credits members only from verified provider callbacks and tracks the provider's gross revenue separately from the member reward.
 
 ## Version
-6.0.0
+7.0.0
 
 ## Production configuration
 Required:
@@ -38,3 +38,16 @@ The member wallet receives only the configured member reward. Provider gross rev
 
 ## Important
 Never add demo survey inventory or test earnings to production. Never enter guessed provider secrets or payout credentials.
+
+
+## Version 7
+- Added Terms of Service and Privacy Policy pages and footer links.
+- Added explicit Terms/Privacy consent to account registration.
+- Added TheoremReach server-side reward callback with HMAC-SHA1 verification, duplicate transaction protection and reversals.
+- Added configurable TheoremReach entry URL and exchange rate.
+- Official support contact: support@liliantech.online.
+
+TheoremReach configuration:
+- `THEOREMREACH_SECRET_KEY`
+- `THEOREMREACH_ENTRY_URL`
+- `THEOREMREACH_EXCHANGE_RATE` (default 100)
