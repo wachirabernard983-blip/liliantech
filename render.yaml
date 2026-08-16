@@ -25,9 +25,9 @@ services:
       - key: AI_QUESTION_REWARD
         value: "0.005"
       - key: AI_QUESTION_BATCH_SIZE
-        value: "15"
+        value: "30"
       - key: AI_QUESTION_PREFETCH
-        value: "10"
+        value: "30"
       - key: PAYPAL_ENV
         value: "sandbox"
       - key: PAYPAL_CLIENT_ID

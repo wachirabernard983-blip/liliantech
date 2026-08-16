@@ -132,6 +132,18 @@ async function initializeDatabase() {
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ai_survey_bundles (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title VARCHAR(255) NOT NULL,
+      category VARCHAR(80) NOT NULL DEFAULT 'Global Opinion',
+      question_ids JSONB NOT NULL,
+      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.050000,
+      status VARCHAR(20) NOT NULL DEFAULT 'available',
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS withdrawals (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -247,7 +259,9 @@ const providerSurveyCache = new Map();
 let aiQuestionGenerationPromise = null;
 const AI_QUESTION_MODEL = String(process.env.OPENAI_QUESTION_MODEL || 'gpt-5.6-luna').trim();
 const AI_QUESTION_REWARD = Number(process.env.AI_QUESTION_REWARD || 0.005);
-const AI_QUESTION_BATCH_SIZE = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_BATCH_SIZE || 15)));
+const AI_QUESTION_BATCH_SIZE = Math.max(10, Math.min(50, Number(process.env.AI_QUESTION_BATCH_SIZE || 30)));
+const AI_SURVEY_SIZE = 10;
+const AI_SURVEY_PREFETCH = Math.max(2, Math.min(10, Number(process.env.AI_SURVEY_PREFETCH || 3)));
 const AI_QUESTION_PREFETCH = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_PREFETCH || 10)));
 
 function questionHash(text) {
@@ -762,56 +776,134 @@ app.get("/api/account", requireAuth, async (req, res) => {
 });
 
 
+async function ensureAiSurveyBundles(userId, minimum = AI_SURVEY_PREFETCH) {
+  const existing = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM ai_survey_bundles
+     WHERE user_id=$1 AND status IN ('available','in_progress')`, [userId]
+  );
+  if (Number(existing.rows[0].count) >= minimum) return;
+
+  await ensureAiQuestionInventory(userId, Math.max(AI_QUESTION_PREFETCH, minimum * AI_SURVEY_SIZE));
+  const used = await pool.query(
+    `SELECT DISTINCT jsonb_array_elements_text(question_ids)::int AS question_id
+     FROM ai_survey_bundles WHERE user_id=$1`, [userId]
+  );
+  const usedIds = used.rows.map(r => Number(r.question_id)).filter(Number.isFinite);
+  const need = Math.max(0, (minimum - Number(existing.rows[0].count)) * AI_SURVEY_SIZE);
+  const q = await pool.query(
+    `SELECT id, category, reward FROM ai_questions
+     WHERE active=TRUE ${usedIds.length ? 'AND id <> ALL($2::int[])' : ''}
+     ORDER BY created_at ASC, id ASC LIMIT $1`,
+    usedIds.length ? [need, usedIds] : [need]
+  );
+
+  for (let i = 0; i + AI_SURVEY_SIZE <= q.rows.length; i += AI_SURVEY_SIZE) {
+    const chunk = q.rows.slice(i, i + AI_SURVEY_SIZE);
+    const categories = [...new Set(chunk.map(x => x.category))];
+    const category = categories.length === 1 ? categories[0] : 'Global Opinion';
+    const rewardTotal = chunk.reduce((sum, x) => sum + Number(x.reward || AI_QUESTION_REWARD), 0);
+    await pool.query(
+      `INSERT INTO ai_survey_bundles (user_id,title,category,question_ids,reward_total)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [userId, `LilianTech ${category} Survey`, category,
+       JSON.stringify(chunk.map(x => Number(x.id))), rewardTotal]
+    );
+  }
+}
+
 async function getAllSurveyInventory(user = null, req = null) {
   if (!user) return [];
   try {
-    return await getAiQuestionInventory(user.id, AI_QUESTION_PREFETCH);
+    await ensureAiSurveyBundles(user.id);
+    const result = await pool.query(
+      `SELECT b.id,b.title,b.category,b.reward_total,b.status,b.started_at,b.completed_at,
+              jsonb_array_length(b.question_ids) AS question_count,
+              (SELECT COUNT(*) FROM survey_activity a
+               WHERE a.user_id=b.user_id AND a.survey_id LIKE CONCAT('bundle-',b.id,'-q-%')
+                 AND a.status='completed') AS answered_count
+       FROM ai_survey_bundles b
+       WHERE b.user_id=$1 AND b.status IN ('available','in_progress')
+       ORDER BY b.id ASC`, [user.id]
+    );
+    return result.rows.map(b => ({
+      id: `bundle-${b.id}`,
+      title: b.title,
+      category: b.category,
+      reward: Number(b.reward_total),
+      questionCount: Number(b.question_count),
+      answeredCount: Number(b.answered_count),
+      remainingCount: Number(b.question_count) - Number(b.answered_count),
+      status: b.status,
+      startedAt: b.started_at,
+      provider: 'LilianTech AI',
+      providerId: 'liliantech-ai',
+      source: 'ai'
+    }));
   } catch (error) {
-    console.error('AI question inventory:', error);
+    console.error('AI survey inventory:', error);
     return [];
   }
 }
 
 async function getSurveyById(surveyId, user = null, req = null) {
   if (!user) return null;
-  return await getAiQuestionById(surveyId);
+  const id = String(surveyId || '').replace(/^bundle-/, '');
+  if (!/^\d+$/.test(id)) return null;
+  const bundle = await pool.query(
+    `SELECT id,title,category,reward_total,status,question_ids
+     FROM ai_survey_bundles WHERE id=$1 AND user_id=$2`, [Number(id), user.id]
+  );
+  const b = bundle.rows[0];
+  if (!b) return null;
+  const ids = Array.isArray(b.question_ids) ? b.question_ids : JSON.parse(b.question_ids || '[]');
+  const questions = await pool.query(
+    `SELECT id,category,topic,region,question,options,reward
+     FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`, [ids]
+  );
+  const answered = await pool.query(
+    `SELECT survey_id FROM survey_activity
+     WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
+    [user.id, Number(id)]
+  );
+  const answeredIds = new Set(answered.rows.map(r => String(r.survey_id).split('-q-')[1]));
+  return {
+    id:`bundle-${b.id}`, title:b.title, category:b.category, reward:Number(b.reward_total),
+    status:b.status, questions:questions.rows.map(q => ({
+      id:`bundle-${b.id}-q-${q.id}`, questionId:q.id, category:q.category, topic:q.topic,
+      region:q.region, question:q.question, options:Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]'),
+      reward:Number(q.reward), answered:answeredIds.has(String(q.id))
+    })).filter(q=>!q.answered)
+  };
 }
 
 app.get("/api/dashboard", requireAuth, async (req, res) => {
   try {
     const user = await getUserById(req.session.userId);
+    if (!user) return res.status(401).json({ error: "Account not found." });
 
-    if (!user) {
-      return res.status(401).json({ error: "Account not found." });
-    }
-
-    const activity = await pool.query(
-      `SELECT survey_id, title, reward, status, started_at, completed_at
-       FROM survey_activity
-       WHERE user_id = $1
-       ORDER BY COALESCE(completed_at, started_at) DESC`,
-      [req.session.userId]
+    await ensureAiSurveyBundles(user.id);
+    const bundles = await pool.query(
+      `SELECT b.id,b.title,b.category,b.reward_total,b.status,b.started_at,b.completed_at,
+              jsonb_array_length(b.question_ids) AS question_count,
+              (SELECT COUNT(*) FROM survey_activity a WHERE a.user_id=b.user_id
+               AND a.survey_id LIKE CONCAT('bundle-',b.id,'-q-%') AND a.status='completed') AS answered_count
+       FROM ai_survey_bundles b WHERE b.user_id=$1 ORDER BY b.created_at DESC`, [user.id]
     );
-
-    const completed = activity.rows.filter((item) => item.status === "completed");
-    const inProgress = activity.rows.filter((item) => item.status === "in_progress");
-    const completedEarnings = completed.reduce(
-      (total, item) => total + Number(item.reward || 0),
-      0
-    );
-
+    const rows = bundles.rows;
+    const available = rows.filter(b => b.status === 'available').length;
+    const inProgress = rows.filter(b => b.status === 'in_progress').length;
+    const completed = rows.filter(b => b.status === 'completed').length;
+    const activity = rows.map(b => ({
+      survey_id:`bundle-${b.id}`, title:b.title, reward:Number(b.reward_total),
+      status:b.status, started_at:b.started_at, completed_at:b.completed_at,
+      question_count:Number(b.question_count), answered_count:Number(b.answered_count)
+    }));
     res.set("Cache-Control", "no-store");
     res.json({
       user,
-      stats: {
-        available: (await getAllSurveyInventory(user, req)).filter(
-          (survey) => !activity.rows.some((item) => item.survey_id === survey.id)
-        ).length,
-        inProgress: inProgress.length,
-        completed: completed.length,
-        completedEarnings
-      },
-      activity: activity.rows
+      stats:{available,inProgress,completed,
+        completedEarnings:rows.filter(b=>b.status==='completed').reduce((t,b)=>t+Number(b.reward_total||0),0)},
+      activity
     });
   } catch (error) {
     console.error("Dashboard error:", error);
@@ -821,560 +913,57 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
 
 app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
   try {
-    const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
-    if (!survey) return res.status(404).json({ error: "Question not found or no longer available." });
-
-    const existing = await pool.query(`SELECT status FROM survey_activity WHERE user_id=$1 AND survey_id=$2`, [req.session.userId, survey.id]);
-    if (existing.rows.length && existing.rows[0].status === 'completed') {
-      return res.status(409).json({ error: "You have already answered this question." });
-    }
-    if (!existing.rows.length) {
-      await pool.query(
-        `INSERT INTO survey_activity (user_id, survey_id, title, reward, status) VALUES ($1,$2,$3,$4,'in_progress')`,
-        [req.session.userId, survey.id, survey.title, survey.reward]
-      );
-    }
-
-    res.status(201).json({
-      message: "Question ready.",
-      status: "in_progress",
-      question: survey.question,
-      options: survey.options,
-      category: survey.category,
-      topic: survey.topic,
-      reward: survey.reward
-    });
+    const user = await getUserById(req.session.userId);
+    const survey = await getSurveyById(req.params.surveyId, user, req);
+    if (!survey) return res.status(404).json({ error: "Survey not found." });
+    if (survey.status === 'completed') return res.status(409).json({ error: "This survey is already completed." });
+    await pool.query(
+      `UPDATE ai_survey_bundles SET status='in_progress', started_at=COALESCE(started_at,NOW()) WHERE id=$1 AND user_id=$2`,
+      [Number(String(req.params.surveyId).replace('bundle-','')), user.id]
+    );
+    res.status(201).json({message:"Survey opened.", ...survey});
   } catch (error) {
-    console.error("Start AI question error:", error);
-    res.status(500).json({ error: "Unable to start the question." });
+    console.error("Start AI survey error:", error);
+    res.status(500).json({ error: "Unable to open the survey." });
   }
 });
 
 app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   const client = await pool.connect();
   try {
-    const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
-    if (!survey) return res.status(404).json({ error: "Question not found." });
-
-    const answer = String(req.body?.answer || '').trim();
-    if (!answer || !survey.options.includes(answer)) {
-      return res.status(400).json({ error: "Please select one of the available answers." });
-    }
-
-    await client.query('BEGIN');
-    const activity = await client.query(
-      `SELECT id, reward, status FROM survey_activity WHERE user_id=$1 AND survey_id=$2 FOR UPDATE`,
-      [req.session.userId, survey.id]
-    );
-    if (!activity.rows.length) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: "Start the question before answering it." });
-    }
-    if (activity.rows[0].status === 'completed') {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: "This question has already been answered." });
-    }
-
-    const reward = Number(activity.rows[0].reward || survey.reward || 0);
-    await client.query(`UPDATE survey_activity SET status='completed', completed_at=NOW() WHERE id=$1`, [activity.rows[0].id]);
-    await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [reward, req.session.userId]);
-    await client.query(
-      `INSERT INTO transactions (user_id, type, amount, description, reference_id) VALUES ($1,'earning',$2,$3,$4)`,
-      [req.session.userId, reward, `Answered ${survey.category}: ${survey.title}`, survey.id]
-    );
-    await client.query('COMMIT');
-
-    res.json({ message: "Answer recorded and reward added.", status: "completed", reward, answer });
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    console.error("Complete AI question error:", error);
-    res.status(500).json({ error: "Unable to record your answer." });
-  } finally {
-    client.release();
-  }
-});
-
-// ---------- Provider callbacks ----------
-
-// ---------- TheoremReach publisher integration ----------
-// Rewards are credited only from a verified server-side callback. The entry URL is
-// provider-configured and kept server-side so credentials and user identifiers are
-// not exposed as application secrets in the frontend.
-app.get('/api/providers/theoremreach/entry', requireAuth, async (req, res) => {
-  const url = theoremReachEntryUrl(req.session.userId);
-  if (!url) return res.status(503).json({ error: 'TheoremReach live survey entry is not configured yet.' });
-  return res.redirect(url);
-});
-
-app.all('/api/providers/theoremreach/reward', async (req, res) => {
-  try {
-    if (String(req.query.debug || req.body?.debug || '') === 'true') return res.status(200).send('OK');
-    if (!theoremReachHashValid(req)) return res.status(403).send('Invalid signature');
-
-    const q = Object.assign({}, req.query || {}, req.body || {});
-    const txId = String(q.tx_id || '').trim();
-    const rawUserId = String(q.user_id || '').trim();
-    const reversal = String(q.reversal || '').toLowerCase() === 'true';
-    if (!txId || !rawUserId || !/^\d+$/.test(rawUserId)) return res.status(400).send('Missing transaction or user');
-
-    const userId = Number(rawUserId);
-    const appCurrencyReward = Number(q.reward || 0);
-    const grossUsd = Number(q.currency || q.reward_amount_in_dollars || 0);
-    const rewardUsd = Number((appCurrencyReward / getTheoremReachExchangeRate()).toFixed(2));
-    const effectiveReward = reversal ? -Math.abs(rewardUsd) : rewardUsd;
-    const publisherRevenue = Number.isFinite(grossUsd) ? grossUsd : 0;
-    const margin = Number((publisherRevenue - rewardUsd).toFixed(2));
-    const surveyId = String(q.offer_id || q.campaign_id || '').trim();
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const user = await client.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [userId]);
-      if (!user.rows.length) { await client.query('ROLLBACK'); return res.status(404).send('Unknown user'); }
-
-      const existing = await client.query(
-        `SELECT id,status,user_reward FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE`,
-        ['theoremreach', txId]
-      );
-      if (existing.rows.length) {
-        if (reversal && existing.rows[0].status !== 'reversed') {
-          const prior = Number(existing.rows[0].user_reward || 0);
-          await client.query(`UPDATE provider_transactions SET status='reversed', user_reward=0, margin=0, raw_payload=$1 WHERE id=$2`, [q, existing.rows[0].id]);
-          if (prior > 0) {
-            await client.query(`UPDATE users SET balance=GREATEST(0,balance-$1) WHERE id=$2`, [prior, userId]);
-            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'reversal',$2,$3,$4)`, [userId, -prior, `TheoremReach survey reversal ${txId}`, txId]);
-          }
-        }
-        await client.query('COMMIT');
-        return res.status(200).send('OK');
-      }
-
-      const status = reversal ? 'reversed' : 'completed';
-      await client.query(
-        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        ['theoremreach', txId, userId, surveyId, status, Math.abs(effectiveReward), publisherRevenue, reversal ? 0 : rewardUsd, reversal ? 0 : margin, q]
-      );
-      if (!reversal && rewardUsd > 0) {
-        await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [rewardUsd, userId]);
-        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [userId, rewardUsd, `TheoremReach survey ${txId}`, txId]);
-        if (surveyId) await client.query(`UPDATE survey_activity SET status='completed',completed_at=NOW(),reward=$1 WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`, [rewardUsd, userId, `theoremreach-${surveyId}`]);
-      }
-      await client.query('COMMIT');
-      return res.status(200).send('OK');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(()=>{});
-      throw e;
-    } finally { client.release(); }
-  } catch (error) {
-    console.error('TheoremReach callback error:', error);
-    return res.status(500).send('Callback processing failed');
-  }
-});
-
-// CPX callback. Keep the provider secret server-side and require a valid signature
-// before any wallet credit is created.
-app.all('/api/providers/cpx/postback', async (req, res) => {
-  try {
-    if (!process.env.CPX_SECURE_HASH) return res.status(503).send('CPX secure hash not configured');
-    const q = { ...req.query, ...req.body };
-    const status = String(q.status || '').trim();
-    const transactionId = String(q.trans_id || q.transaction_id || '').trim();
-    const userId = String(q.user_id || q.subid || q.ext_user_id || '').trim();
-    const publisherRevenue = Number(q.payout_publisher_usd ?? q.publisher_payout_usd ?? q.amount_usd ?? q.amount ?? 0);
-    const explicitUserReward = Number(q.user_reward_usd ?? q.reward_usd ?? q.payout_usd);
-    const calculatedReward = calculateUserReward('cpx', publisherRevenue, Number.isFinite(explicitUserReward) ? explicitUserReward : null);
-    const secureHash = String(q.secure_hash || '').trim().toLowerCase();
-    if (!transactionId || !userId || !/^\d+$/.test(userId) || !Number.isFinite(publisherRevenue) || publisherRevenue < 0 || !secureHash) return res.status(400).send('invalid');
-    const expected = crypto.createHash('md5').update(`${transactionId}-${process.env.CPX_SECURE_HASH}`).digest('hex');
-    if (secureHash.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(secureHash), Buffer.from(expected))) return res.status(403).send('invalid signature');
-    const numericUserId = Number(userId);
-    const user = await pool.query('SELECT id FROM users WHERE id=$1', [numericUserId]);
-    if (!user.rows[0]) return res.status(404).send('user not found');
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const existing = await client.query(`SELECT id,status,COALESCE(user_reward,amount,0) AS user_reward FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE`, ['cpx', transactionId]);
-      if (existing.rows[0]) {
-        const prior = existing.rows[0];
-        if (status === '2' && prior.status !== '2') {
-          const reversal = Number(prior.user_reward || 0);
-          if (reversal > 0) {
-            await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [reversal, numericUserId]);
-            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [numericUserId, -reversal, `CPX Research reversal ${transactionId}`, transactionId]);
-          }
-          await client.query(`UPDATE provider_transactions SET status='2' WHERE id=$1`, [prior.id]);
-        }
-        await client.query('COMMIT');
-        return res.status(200).send('ok');
-      }
-      const surveyId = String(q.offer_id || q.survey_id || '');
-      const userReward = status === '1' ? calculatedReward : 0;
-      const margin = Number((publisherRevenue - userReward).toFixed(2));
-      await client.query(`INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, ['cpx', transactionId, numericUserId, surveyId, status, userReward, publisherRevenue, userReward, margin, q]);
-      if (status === '1' && userReward > 0) {
-        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [userReward, numericUserId]);
-        if (surveyId) await client.query(`UPDATE survey_activity SET status='completed',completed_at=NOW(),reward=$1 WHERE user_id=$2 AND survey_id=$3 AND status <> 'completed'`, [userReward, numericUserId, `cpx-${surveyId}`]);
-        await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'earning',$2,$3,$4)`, [numericUserId, userReward, `CPX Research survey ${transactionId}`, transactionId]);
-      }
-      await client.query('COMMIT');
-      return res.status(200).send('ok');
-    } catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
-  } catch (e) { console.error('CPX callback:', e); return res.status(500).send('error'); }
-});
-
-// BitLabs S2S callback. BitLabs documents an HMAC-SHA1 hash over the complete
-// callback URL. Do not credit anything until the app secret is configured.
-app.all('/api/providers/bitlabs/callback', async (req, res) => {
-  try {
-    const secret = process.env.BITLABS_APP_SECRET;
-    if (!secret) return res.status(503).send('BitLabs callback secret not configured');
-
-    const rawUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
-    const unsignedUrl = rawUrl.replace(/([?&])hash=[^&]*/i, '$1').replace(/[?&]$/, '');
-    const suppliedHash = String(req.query.hash || req.body?.hash || '').trim().toLowerCase();
-    const expectedHash = crypto.createHmac('sha1', secret).update(unsignedUrl).digest('hex');
-    if (!suppliedHash || suppliedHash.length !== expectedHash.length || !crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(expectedHash))) {
-      return res.status(403).send('invalid signature');
-    }
-
-    const userId = String(req.query.uid || req.body?.uid || '').trim();
-    const transactionId = String(req.query.tx || req.query.transaction_id || req.body?.tx || req.body?.transaction_id || '').trim();
-    const activityType = String(req.query.activity_type || req.body?.activity_type || '').toUpperCase();
-    const publisherRevenue = Number(req.query.raw || req.query.revenue_usd || req.body?.raw || req.body?.revenue_usd || req.query.usd || req.body?.usd || 0);
-    const explicitUserReward = Number(req.query.reward_usd || req.body?.reward_usd);
-    const amountUsd = calculateUserReward('bitlabs', publisherRevenue, Number.isFinite(explicitUserReward) ? explicitUserReward : null);
-    if (!/^\d+$/.test(userId) || !transactionId || !Number.isFinite(amountUsd) || amountUsd < 0) return res.status(400).send('invalid');
-
-    const numericUserId = Number(userId);
-    const user = await pool.query('SELECT id FROM users WHERE id=$1', [numericUserId]);
-    if (!user.rows[0]) return res.status(404).send('user not found');
-
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const exists = await client.query(
-        'SELECT id FROM provider_transactions WHERE provider_id=$1 AND transaction_id=$2 FOR UPDATE',
-        ['bitlabs', transactionId]
-      );
-      if (exists.rows[0]) {
-        if (['REVERSAL','CHARGEBACK','REJECTED'].includes(activityType) && exists.rows[0].status !== activityType) {
-          const prior = await client.query(`SELECT COALESCE(user_reward,amount,0) AS user_reward FROM provider_transactions WHERE id=$1 FOR UPDATE`, [exists.rows[0].id]);
-          const reversal = Number(prior.rows[0]?.user_reward || 0);
-          if (reversal > 0) {
-            await client.query('UPDATE users SET balance=balance-$1 WHERE id=$2', [reversal, numericUserId]);
-            await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'adjustment',$2,$3,$4)`, [numericUserId, -reversal, `BitLabs reversal ${transactionId}`, transactionId]);
-          }
-          await client.query(`UPDATE provider_transactions SET status=$1 WHERE id=$2`, [activityType, exists.rows[0].id]);
-        }
-        await client.query('COMMIT');
-        return res.status(200).send('ok');
-      }
-      const userReward = (activityType === 'COMPLETE' || activityType === 'RECONCILIATION') ? amountUsd : 0;
-      const margin = Number((publisherRevenue - userReward).toFixed(2));
-      await client.query(
-        `INSERT INTO provider_transactions (provider_id,transaction_id,user_id,survey_id,status,amount,publisher_revenue,user_reward,margin,raw_payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        ['bitlabs', transactionId, numericUserId, String(req.query.survey_id || req.body?.survey_id || ''), activityType || 'UNKNOWN', userReward, publisherRevenue, userReward, margin, { query: req.query, body: req.body }]
-      );
-      if (userReward > 0) {
-        await client.query('UPDATE users SET balance=balance+$1 WHERE id=$2', [userReward, numericUserId]);
-        await client.query(
-          `INSERT INTO transactions (user_id,type,amount,description,reference_id)
-           VALUES ($1,'earning',$2,$3,$4)`,
-          [numericUserId, amountUsd, `BitLabs survey ${transactionId}`, transactionId]
-        );
-      }
-      await client.query('COMMIT');
-      return res.status(200).send('ok');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
-  } catch (e) {
-    console.error('BitLabs callback:', e);
-    return res.status(500).send('error');
-  }
-});
-
-// ---------- Payout providers ----------
-function payoutMode(method) {
-  if (method === 'PayPal') return process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET && process.env.PAYPAL_SENDER_EMAIL ? 'automatic' : 'manual';
-  if (method === 'Wise') return process.env.WISE_API_TOKEN ? 'automatic' : 'manual';
-  if (method === 'Payoneer') return process.env.PAYONEER_API_TOKEN ? 'automatic' : 'manual';
-  return 'manual';
-}
-
-function getWithdrawalMethods() {
-  return [
-    { id: 'PayPal', label: 'PayPal', currency: 'USD', mode: payoutMode('PayPal'), speed: 'Fast', fields: [
-      { name: 'email', label: 'PayPal email', type: 'email', placeholder: 'you@example.com', required: true }
-    ]},
-    { id: 'Wise', label: 'Wise', currency: 'USD', mode: payoutMode('Wise'), speed: 'Fast', fields: [
-      { name: 'fullName', label: 'Name on Wise account', type: 'text', placeholder: 'Full name', required: true },
-      { name: 'email', label: 'Wise account email', type: 'email', placeholder: 'you@example.com', required: true },
-      { name: 'recipientId', label: 'Wise recipient or profile ID', type: 'text', placeholder: 'Optional', required: false }
-    ]},
-    { id: 'Payoneer', label: 'Payoneer', currency: 'USD', mode: payoutMode('Payoneer'), speed: 'Fast', fields: [
-      { name: 'fullName', label: 'Name on Payoneer account', type: 'text', placeholder: 'Full name', required: true },
-      { name: 'email', label: 'Payoneer account email', type: 'email', placeholder: 'you@example.com', required: true },
-      { name: 'customerId', label: 'Payoneer customer ID', type: 'text', placeholder: 'Optional', required: false }
-    ]},
-    { id: 'Bank transfer', label: 'Bank transfer', currency: 'USD', mode: payoutMode('Bank transfer'), speed: 'Bank processing', fields: [
-      { name: 'accountName', label: 'Account holder name', type: 'text', placeholder: 'Full name', required: true },
-      { name: 'country', label: 'Bank country or region', type: 'text', placeholder: 'Country or region', required: true },
-      { name: 'bankName', label: 'Bank name', type: 'text', placeholder: 'Bank name', required: true },
-      { name: 'accountNumber', label: 'Account number / IBAN', type: 'text', placeholder: 'Account number or IBAN', required: true },
-      { name: 'swift', label: 'SWIFT / BIC', type: 'text', placeholder: 'SWIFT or BIC', required: false },
-      { name: 'currency', label: 'Payout currency', type: 'text', placeholder: 'e.g. USD, EUR, GBP', required: true }
-    ]}
-  ];
-}
-
-function parseDetails(details) {
-  try { return JSON.parse(details); } catch { return { value: details }; }
-}
-
-async function paypalAccessToken() {
-  const live = String(process.env.PAYPAL_ENV || 'sandbox').toLowerCase() === 'live';
-  const base = live ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
-  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
-  const r = await fetch(`${base}/v1/oauth2/token`, {
-    method: 'POST', headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: 'grant_type=client_credentials', signal: AbortSignal.timeout(10000)
-  });
-  if (!r.ok) throw new Error(`PayPal authentication failed (${r.status})`);
-  const d = await r.json();
-  return { base, token: d.access_token };
-}
-
-async function sendPaypalPayout(amountUsd, details, withdrawalId) {
-  const email = String(details.email || '').trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid PayPal email address.');
-  const { base, token } = await paypalAccessToken();
-  const batchId = `LT-${withdrawalId}-${Date.now()}`.slice(0, 30);
-  const payload = {
-    sender_batch_header: {
-      sender_batch_id: batchId,
-      email_subject: 'Your LilianTech withdrawal is on the way',
-      email_message: 'Your LilianTech withdrawal has been submitted to PayPal.'
-    },
-    items: [{ recipient_type: 'EMAIL', amount: { value: Number(amountUsd).toFixed(2), currency: 'USD' }, receiver: email, note: `LilianTech withdrawal ${withdrawalId}`, sender_item_id: String(withdrawalId) }]
-  };
-  const r = await fetch(`${base}/v1/payments/payouts`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload), signal: AbortSignal.timeout(15000)
-  });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.message || 'PayPal payout request failed.');
-  return d.batch_header?.payout_batch_id || batchId;
-}
-
-async function executeAutomaticPayout(method, amount, details, withdrawalId) {
-  if (method === 'PayPal') return await sendPaypalPayout(amount, details, withdrawalId);
-  if (method === 'Wise') throw new Error('Wise payout integration is not enabled yet.');
-  if (method === 'Payoneer') throw new Error('Payoneer payout integration is not enabled yet.');
-  return null;
-}
-
-
-
-
-// ---------- Earnings, withdrawals, profile and administration ----------
-app.get("/api/earnings", requireAuth, async (req, res) => {
-  try {
     const user = await getUserById(req.session.userId);
-    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
-    const tx = await pool.query(`SELECT id, type, amount, description, reference_id, created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
-    const pendingAmount = Number(pending.rows[0].amount || 0);
-    res.json({ total: Number(user.balance || 0), pending: pendingAmount, available: Math.max(0, Number(user.balance || 0) - pendingAmount), transactions: tx.rows, minimumWithdrawal: getMinimumWithdrawal() });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load earnings." }); }
-});
-
-app.get("/api/withdrawal-methods", requireAuth, async (req, res) => {
-  res.set("Cache-Control", "no-store");
-  res.json({ methods: getWithdrawalMethods(), minimumWithdrawal: getMinimumWithdrawal(), note: "Automatic payouts are available only when LilianTech has the required provider credentials configured. Otherwise the request is queued for administrator processing." });
-});
-
-app.get("/api/withdrawals", requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT id, amount, method, details, status, admin_note, provider_reference, payout_error, created_at, processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC`, [req.session.userId]);
-    res.json({ withdrawals: result.rows, minimumWithdrawal: getMinimumWithdrawal(), methods: getWithdrawalMethods() });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
-});
-
-app.post("/api/withdrawals", requireAuth, async (req, res) => {
-  const client = await pool.connect();
-  let withdrawal = null;
-  try {
-    const amount = Number(req.body.amount);
-    const method = String(req.body.method || '').trim();
-    const detailsObj = req.body.details && typeof req.body.details === 'object' ? req.body.details : {};
-    const details = JSON.stringify(detailsObj);
-    const minimum = getMinimumWithdrawal();
-    const methods = getWithdrawalMethods();
-    const methodConfig = methods.find(m => m.id === method);
-    if (!methodConfig) return res.status(400).json({ error: "Select a supported withdrawal method." });
-    if (!Number.isFinite(amount) || amount < minimum) return res.status(400).json({ error: `Minimum withdrawal is $${minimum.toFixed(2)}.` });
-    for (const field of methodConfig.fields) {
-      if (field.required && !String(detailsObj[field.name] || '').trim()) return res.status(400).json({ error: `${field.label} is required.` });
-    }
+    const match = String(req.params.surveyId).match(/^bundle-(\d+)-q-(\d+)$/);
+    if (!match) return res.status(400).json({error:"Invalid question."});
+    const bundleId=Number(match[1]), questionId=Number(match[2]);
+    const answer=String(req.body?.answer||'').trim();
+    const q=await client.query(`SELECT q.id,q.question,q.options,q.reward,b.status,b.question_ids
+      FROM ai_questions q JOIN ai_survey_bundles b ON q.id=ANY(SELECT jsonb_array_elements_text(b.question_ids)::int)
+      WHERE q.id=$1 AND b.id=$2 AND b.user_id=$3 AND q.active=TRUE`,[questionId,bundleId,user.id]);
+    if(!q.rows.length) return res.status(404).json({error:"Question not found."});
+    const row=q.rows[0], options=Array.isArray(row.options)?row.options:JSON.parse(row.options||'[]');
+    if(!options.includes(answer)) return res.status(400).json({error:"Please select one of the available answers."});
     await client.query('BEGIN');
-    const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [req.session.userId]);
-    const pending = await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
-    const available = Number(user.rows[0]?.balance || 0) - Number(pending.rows[0]?.amount || 0);
-    if (amount > available) { await client.query('ROLLBACK'); return res.status(400).json({ error: "Insufficient available balance." }); }
-    const result = await client.query(`INSERT INTO withdrawals (user_id, amount, method, details, status) VALUES ($1,$2,$3,$4,'pending') RETURNING id, amount, method, details, status, created_at`, [req.session.userId, amount.toFixed(2), method, details]);
-    withdrawal = result.rows[0];
+    const sid=`bundle-${bundleId}-q-${questionId}`;
+    const existing=await client.query(`SELECT id,status FROM survey_activity WHERE user_id=$1 AND survey_id=$2 FOR UPDATE`,[user.id,sid]);
+    if(existing.rows[0]?.status==='completed'){await client.query('ROLLBACK');return res.status(409).json({error:"This question has already been answered."});}
+    await client.query(`INSERT INTO survey_activity(user_id,survey_id,title,reward,status) VALUES($1,$2,$3,$4,'completed')
+      ON CONFLICT(user_id,survey_id) DO UPDATE SET status='completed',completed_at=NOW(),reward=EXCLUDED.reward`,
+      [user.id,sid,row.question,Number(row.reward||AI_QUESTION_REWARD)]);
+    const reward=Number(row.reward||AI_QUESTION_REWARD);
+    await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`,[reward,user.id]);
+    await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'earning',$2,$3,$4)`,
+      [user.id,reward,`Answered LilianTech survey question: ${row.question}`,sid]);
+    const count=await client.query(`SELECT COUNT(*)::int AS n FROM survey_activity WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
+      [user.id,bundleId]);
+    const total=Array.isArray(row.question_ids)?row.question_ids.length:JSON.parse(row.question_ids||'[]').length;
+    const finished=count.rows[0].n>=total;
+    if(finished) await client.query(`UPDATE ai_survey_bundles SET status='completed',completed_at=NOW() WHERE id=$1 AND user_id=$2`,[bundleId,user.id]);
+    else await client.query(`UPDATE ai_survey_bundles SET status='in_progress',started_at=COALESCE(started_at,NOW()) WHERE id=$1 AND user_id=$2`,[bundleId,user.id]);
     await client.query('COMMIT');
-  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); return res.status(500).json({ error: "Unable to submit withdrawal." }); } finally { client.release(); }
-
-  // Try an actual provider payout only when credentials are present. Never mark a
-  // withdrawal paid merely because the request was accepted by LilianTech.
-  if (payoutMode(withdrawal.method) === 'automatic') {
-    try {
-      const reference = await executeAutomaticPayout(withdrawal.method, Number(withdrawal.amount), parseDetails(withdrawal.details), withdrawal.id);
-      await pool.query(`UPDATE withdrawals SET status='processing', provider_reference=$1, processed_at=NOW(), payout_error=NULL WHERE id=$2`, [reference, withdrawal.id]);
-      return res.status(201).json({ message: `Withdrawal submitted to ${withdrawal.method}. Provider confirmation is still required before it is marked paid.`, withdrawal: { ...withdrawal, status: 'processing', provider_reference: reference } });
-    } catch (e) {
-      console.error(`${withdrawal.method} payout error:`, e);
-      await pool.query(`UPDATE withdrawals SET status='pending', payout_error=$1 WHERE id=$2`, [String(e.message || e).slice(0,500), withdrawal.id]);
-      return res.status(202).json({ message: `Withdrawal saved, but the ${withdrawal.method} payout could not be submitted automatically. It remains pending for review.`, withdrawal: { ...withdrawal, status: 'pending' } });
-    }
-  }
-  res.status(201).json({ message: "Withdrawal request submitted and queued for processing.", withdrawal });
+    res.json({message:finished?"Survey completed!":"Answer recorded.",status:finished?'survey_completed':'question_completed',
+      reward,remainingQuestions:Math.max(0,total-count.rows[0].n),surveyCompleted:finished});
+  } catch(error){await client.query('ROLLBACK').catch(()=>{});console.error("Complete AI question error:",error);res.status(500).json({error:"Unable to record your answer."});}
+  finally{client.release();}
 });
 
-app.put("/api/profile", requireAuth, async (req, res) => {
-  try {
-    const fullName = String(req.body.fullName || '').trim();
-    const phone = String(req.body.phone || '').trim();
-    const paymentMethod = String(req.body.paymentMethod || '').trim();
-    const paymentDetails = String(req.body.paymentDetails || '').trim();
-    if (!fullName) return res.status(400).json({ error: "Full name is required." });
-    const current = await getUserById(req.session.userId);
-    if (isDesignatedAdmin(current) && fullName !== getAdminIdentity().name) {
-      return res.status(400).json({ error: "The designated administrator name cannot be changed." });
-    }
-    const result = await pool.query(`UPDATE users SET full_name=$1, phone=$2, payment_method=$3, payment_details=$4 WHERE id=$5 RETURNING id, full_name, email, balance, role, phone, payment_method, payment_details, created_at`, [fullName, phone || null, paymentMethod || null, paymentDetails || null, req.session.userId]);
-    res.json({ message: "Profile updated.", user: result.rows[0] });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to update profile." }); }
-});
 
-app.get("/api/admin/revenue", requireAdmin, async (req, res) => {
-  try {
-    const summary = await pool.query(`
-      SELECT
-        COALESCE(SUM(publisher_revenue),0) AS gross_revenue,
-        COALESCE(SUM(user_reward),0) AS member_rewards,
-        COALESCE(SUM(margin),0) AS platform_margin,
-        COUNT(*)::int AS provider_events
-      FROM provider_transactions
-      WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')
-    `);
-    const byProvider = await pool.query(`
-      SELECT provider_id, COALESCE(SUM(publisher_revenue),0) AS gross_revenue,
-             COALESCE(SUM(user_reward),0) AS member_rewards,
-             COALESCE(SUM(margin),0) AS platform_margin, COUNT(*)::int AS events
-      FROM provider_transactions
-      WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')
-      GROUP BY provider_id ORDER BY provider_id
-    `);
-    const pendingLiability = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE status IN ('pending','approved','processing')`);
-    const result = summary.rows[0];
-    res.json({
-      grossRevenue: Number(result.gross_revenue || 0),
-      memberRewards: Number(result.member_rewards || 0),
-      platformMargin: Number(result.platform_margin || 0),
-      providerEvents: result.provider_events,
-      pendingWithdrawalLiability: Number(pendingLiability.rows[0].amount || 0),
-      providers: byProvider.rows.map(x => ({ providerId:x.provider_id, grossRevenue:Number(x.gross_revenue||0), memberRewards:Number(x.member_rewards||0), platformMargin:Number(x.platform_margin||0), events:x.events }))
-    });
-  } catch(e) { console.error(e); res.status(500).json({error:"Unable to load revenue dashboard."}); }
-});
-
-app.get("/api/admin/overview", requireAdmin, async (req, res) => {
-  try {
-    const [users, pending, surveys, providers, revenue] = await Promise.all([
-      pool.query(`SELECT COUNT(*)::int AS count FROM users`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved','processing')`),
-      pool.query(`SELECT COUNT(*)::int AS count FROM survey_activity WHERE status='completed'`),
-      pool.query(`SELECT provider_id, COUNT(*)::int AS count FROM provider_surveys GROUP BY provider_id ORDER BY provider_id`),
-      pool.query(`SELECT COALESCE(SUM(publisher_revenue),0) AS gross, COALESCE(SUM(user_reward),0) AS rewards, COALESCE(SUM(margin),0) AS margin FROM provider_transactions WHERE status IN ('1','COMPLETE','RECONCILIATION','complete','reconciliation')`)
-    ]);
-    res.json({ users: users.rows[0].count, pendingWithdrawals: pending.rows[0].count, pendingAmount: pending.rows[0].amount, completedSurveys: surveys.rows[0].count, providerSurveys: providers.rows, grossRevenue: revenue.rows[0].gross, memberRewards: revenue.rows[0].rewards, platformMargin: revenue.rows[0].margin });
-  } catch (e) { console.error(e); res.status(500).json({ error: "Unable to load admin overview." }); }
-});
-
-app.get("/api/admin/users", requireAdmin, async (req, res) => {
-  try { const r = await pool.query(`SELECT id, full_name, email, balance, role, created_at FROM users ORDER BY created_at DESC LIMIT 500`); res.json({ users: r.rows }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "Unable to load users." }); }
-});
-
-app.get("/api/admin/withdrawals", requireAdmin, async (req, res) => {
-  try { const r = await pool.query(`SELECT w.id,w.amount,w.method,w.details,w.status,w.admin_note,w.provider_reference,w.payout_error,w.created_at,w.processed_at,u.full_name,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC LIMIT 500`); res.json({ withdrawals: r.rows }); }
-  catch (e) { console.error(e); res.status(500).json({ error: "Unable to load withdrawals." }); }
-});
-
-app.post("/api/admin/withdrawals/:id/process", requireAdmin, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const status = String(req.body.status || '').toLowerCase();
-    const note = String(req.body.note || '').trim();
-    if (!['approved','rejected','paid'].includes(status)) return res.status(400).json({ error: "Status must be approved, rejected, or paid." });
-    await client.query('BEGIN');
-    const wr = await client.query(`SELECT * FROM withdrawals WHERE id=$1 FOR UPDATE`, [req.params.id]);
-    if (!wr.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: "Withdrawal not found." }); }
-    const w = wr.rows[0];
-    if (w.status === 'paid' || w.status === 'rejected') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal is already finalized." }); }
-    if (status === 'approved' && w.status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: "Only pending withdrawals can be approved." }); }
-    if (status === 'rejected' && w.status !== 'pending' && w.status !== 'approved') { await client.query('ROLLBACK'); return res.status(400).json({ error: "This withdrawal cannot be rejected in its current state." }); }
-    if (status === 'paid' && !['approved','processing'].includes(w.status)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "A withdrawal must be approved before it can be marked paid." }); }
-    if (status === 'paid') {
-      const user = await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`, [w.user_id]);
-      if (Number(user.rows[0].balance) < Number(w.amount)) { await client.query('ROLLBACK'); return res.status(400).json({ error: "User no longer has enough balance to pay this withdrawal." }); }
-      await client.query(`UPDATE users SET balance=balance-$1 WHERE id=$2`, [w.amount,w.user_id]);
-      await client.query(`INSERT INTO transactions (user_id,type,amount,description,reference_id) VALUES ($1,'withdrawal',$2,$3,$4)`, [w.user_id, -Number(w.amount), `Withdrawal paid via ${w.method}`, String(w.id)]);
-    }
-    await client.query(`UPDATE withdrawals SET status=$1, admin_note=$2, processed_at=NOW() WHERE id=$3`, [status,note||null,w.id]);
-    await client.query('COMMIT');
-    res.json({ message: `Withdrawal marked ${status}.` });
-  } catch (e) { await client.query('ROLLBACK').catch(()=>{}); console.error(e); res.status(500).json({ error: "Unable to process withdrawal." }); } finally { client.release(); }
-});
-
-app.get("/api/admin/provider-surveys", requireAdmin, async (req,res)=>{
-  try { const r=await pool.query(`SELECT id,provider_id,external_id,title,reward,minutes,country,status,created_at FROM provider_surveys ORDER BY created_at DESC`); res.json({surveys:r.rows}); }
-  catch(e){console.error(e);res.status(500).json({error:"Unable to load provider surveys."});}
-});
-
-app.post("/api/admin/provider-surveys", requireAdmin, async (req,res)=>{
-  try {
-    const {providerId,externalId,title,reward,minutes,country,status='active'}=req.body;
-    if(!providerId||!externalId||!title) return res.status(400).json({error:"Provider, external ID and title are required."});
-    const r=await pool.query(`INSERT INTO provider_surveys (provider_id,external_id,title,reward,minutes,country,status) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(provider_id,external_id) DO UPDATE SET title=EXCLUDED.title,reward=EXCLUDED.reward,minutes=EXCLUDED.minutes,country=EXCLUDED.country,status=EXCLUDED.status RETURNING *`,[providerId,externalId,title,Number(reward)||0,Number(minutes)||10,country||'US',status]);
-    res.status(201).json({message:"Provider survey saved.",survey:r.rows[0]});
-  }catch(e){console.error(e);res.status(500).json({error:"Unable to save provider survey."});}
-});
-
-app.get("/api/admin/providers", requireAdmin, async (req,res)=>{
-  try { res.json({providers: require(path.join(__dirname,'data','providers.json'))}); }
-  catch(e){res.status(500).json({error:"Unable to load providers."});}
-});
-
-async function startServer() {
-  try {
-    if (isProduction && !process.env.DATABASE_URL) throw new Error("DATABASE_URL is required in production.");
-    if (isProduction && !process.env.SESSION_SECRET) throw new Error("SESSION_SECRET is required in production.");
-    await initializeDatabase();
-
-    app.listen(PORT, () => {
-      console.log(`LilianTech running on ${PORT}`);
-    });
-  } catch (error) {
-    console.error("Database initialization failed:", error);
-    process.exit(1);
-  }
-}
-
-startServer();
