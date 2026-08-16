@@ -328,8 +328,9 @@ const AI_QUESTION_BATCH_SIZE = Math.max(10, Math.min(50, Number(process.env.AI_Q
 const AI_SURVEY_SIZE = 10;
 const AI_SURVEY_PREFETCH = Math.max(2, Math.min(10, Number(process.env.AI_SURVEY_PREFETCH || 3)));
 const AI_QUESTION_PREFETCH = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_PREFETCH || 10)));
-const SURVEY_MAX_RESPONSES = Math.max(1, Math.min(1000000, Number(process.env.SURVEY_MAX_RESPONSES || 100)));
-const SURVEY_PREFETCH = Math.max(1, Math.min(20, Number(process.env.SURVEY_PREFETCH || 3)));
+const SURVEY_BATCH_SIZE = 5;
+const SURVEY_MAX_RESPONSES = Math.max(1, Math.min(1000000, Number(process.env.SURVEY_MAX_RESPONSES || 1000)));
+const SURVEY_PREFETCH = SURVEY_BATCH_SIZE;
 const NOTIFICATION_EMAIL_ENABLED = String(process.env.NOTIFICATION_EMAIL_ENABLED || 'true').toLowerCase() === 'true';
 const NOTIFICATION_PUSH_ENABLED = String(process.env.NOTIFICATION_PUSH_ENABLED || 'true').toLowerCase() === 'true';
 const notificationClients = new Set();
@@ -954,7 +955,35 @@ async function sendNewSurveyNotifications(campaign) {
   }
 }
 function broadcastSurveyEvent(payload){const data=`data: ${JSON.stringify(payload)}\n\n`;for(const res of notificationClients){try{res.write(data);}catch{notificationClients.delete(res);}}}
+async function ensureGlobalSurveyBatch() {
+  // Keep exactly one global batch active at a time. A batch consists of five
+  // surveys. When any survey reaches 1,000 completions it closes, but no
+  // replacement is created until all five surveys in the batch are closed.
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1)', [81726351]);
+    const active = await client.query(`SELECT COUNT(*)::int AS count FROM survey_campaigns WHERE status='active' AND response_count < max_responses AND (expires_at IS NULL OR expires_at > NOW())`);
+    const total = await client.query(`SELECT COUNT(*)::int AS count FROM survey_campaigns`);
+    let need = 0;
+    if (Number(total.rows[0].count) === 0 || Number(active.rows[0].count) === 0) {
+      need = SURVEY_BATCH_SIZE;
+    } else if (Number(total.rows[0].count) < SURVEY_BATCH_SIZE && Number(active.rows[0].count) < SURVEY_BATCH_SIZE) {
+      // One-time migration from older versions that created fewer than five.
+      need = SURVEY_BATCH_SIZE - Number(active.rows[0].count);
+    }
+    if (need > 0) await createSurveyCampaigns(need);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function getActiveCampaignsForUser(userId) {
+  await ensureGlobalSurveyBatch();
   await assignAvailableCampaigns(userId, SURVEY_PREFETCH);
   const result=await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.max_responses,c.response_count,c.status,c.created_at,a.status AS assignment_status,a.started_at,a.completed_at,
     jsonb_array_length(c.question_ids) AS question_count,
@@ -964,13 +993,15 @@ async function getActiveCampaignsForUser(userId) {
     ORDER BY c.created_at ASC,c.id ASC`,[userId]);
   return result.rows.map(r=>({id:`campaign-${r.id}`,title:r.title,category:r.category,reward:Number(r.reward_total),questionCount:Number(r.question_count),answeredCount:Number(r.answered_count),remainingCount:Number(r.question_count)-Number(r.answered_count),status:r.assignment_status,startedAt:r.started_at,availableResponses:Math.max(0,Number(r.max_responses)-Number(r.response_count)),maxResponses:Number(r.max_responses),responseCount:Number(r.response_count),source:'ai'}));
 }
-async function assignAvailableCampaigns(userId, minimum=3){
-  const existing=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1 AND a.status IN ('available','in_progress') AND c.status='active' AND (c.expires_at IS NULL OR c.expires_at>NOW())`,[userId]);
+async function assignAvailableCampaigns(userId, minimum=SURVEY_BATCH_SIZE){
+  const existing=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1 AND a.status IN ('available','in_progress') AND c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW())`,[Number(userId)]);
   let need=Math.max(0,minimum-Number(existing.rows[0].count));
   if(!need) return;
-  let active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC LIMIT $2::integer`,[Number(userId),Number(need)]);
-  if(active.rows.length<need){await createSurveyCampaigns(Math.max(need-active.rows.length,1));active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC LIMIT $2::integer`,[Number(userId),Number(need)]);}
-  for(const r of active.rows){await pool.query(`INSERT INTO survey_assignments(campaign_id,user_id,status) VALUES($1,$2,'available') ON CONFLICT(campaign_id,user_id) DO NOTHING`,[r.id,userId]);}
+  // Never create a replacement survey because one member has completed one.
+  // New surveys are generated only by ensureGlobalSurveyBatch after the whole
+  // five-survey global batch has closed.
+  const active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC,c.id ASC LIMIT $2::integer`,[Number(userId),Number(need)]);
+  for(const r of active.rows){await pool.query(`INSERT INTO survey_assignments(campaign_id,user_id,status) VALUES($1,$2,'available') ON CONFLICT(campaign_id,user_id) DO NOTHING`,[Number(r.id),Number(userId)]);}
 }
 async function createSurveyCampaigns(count=1){
   const existing=await pool.query(`SELECT question_ids FROM survey_campaigns`);

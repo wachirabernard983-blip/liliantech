@@ -31,9 +31,9 @@ services:
       - key: AI_QUESTION_PREFETCH
         value: "30"
       - key: SURVEY_MAX_RESPONSES
-        value: "100"
+        value: "1000"
       - key: SURVEY_PREFETCH
-        value: "3"
+        value: "5"
       - key: NOTIFICATION_EMAIL_ENABLED
         value: "true"
       - key: NOTIFICATION_PUSH_ENABLED
