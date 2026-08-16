@@ -967,3 +967,15 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
 });
 
 
+
+(async () => {
+  try {
+    await initializeDatabase();
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`LilianTech listening on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Fatal startup error:', error);
+    process.exit(1);
+  }
+})();
