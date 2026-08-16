@@ -82,9 +82,12 @@ app.get("/surveys", (req, res) => {
 app.get("/admin.html", async (req, res) => {
   if (!req.session.userId) return res.redirect("/login.html");
   try {
-    const result = await pool.query('SELECT full_name, email, role FROM users WHERE id=$1', [req.session.userId]);
-    if (!isDesignatedAdmin(result.rows[0])) {
-      return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to the designated LilianTech administrator.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
+    const result = await pool.query('SELECT full_name, email FROM users WHERE id=$1', [req.session.userId]);
+    const user = result.rows[0];
+    // Admin page access is based ONLY on the three explicitly authorized emails.
+    // The database role is not trusted for this page gate.
+    if (!user || !getAdminEmails().includes(String(user.email || '').trim().toLowerCase())) {
+      return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to authorized administrators.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
     }
     return res.sendFile(path.join(__dirname, "public", "admin.html"));
   } catch (error) {
@@ -102,7 +105,7 @@ async function initializeDatabase() {
       full_name VARCHAR(120) NOT NULL,
       email VARCHAR(255) UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      balance NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      balance NUMERIC(14,6) NOT NULL DEFAULT 0.000000,
       role VARCHAR(20) NOT NULL DEFAULT 'member',
       phone VARCHAR(40),
       payment_method VARCHAR(40),
@@ -114,7 +117,7 @@ async function initializeDatabase() {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       survey_id VARCHAR(120) NOT NULL,
       title VARCHAR(255) NOT NULL,
-      reward NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      reward NUMERIC(14,6) NOT NULL DEFAULT 0.000000,
       status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ,
@@ -161,7 +164,7 @@ async function initializeDatabase() {
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       type VARCHAR(30) NOT NULL,
-      amount NUMERIC(12,2) NOT NULL,
+      amount NUMERIC(14,6) NOT NULL,
       description VARCHAR(255) NOT NULL,
       reference_id VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -209,6 +212,8 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(14,6)`);
   await pool.query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(14,6)`);
   await pool.query(`ALTER TABLE survey_activity ALTER COLUMN reward TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(14,6)`);
 
   // One-time cleanup of development/demo artifacts from earlier builds.
   await pool.query(`DELETE FROM provider_surveys WHERE LOWER(provider_id) IN ('demo','test','local','mock') OR LOWER(title) LIKE '%demo%' OR LOWER(title) LIKE '%test survey%'`);
@@ -223,6 +228,14 @@ async function initializeDatabase() {
     `UPDATE users SET role = CASE WHEN LOWER(email)=ANY($1::text[]) THEN 'admin' ELSE 'member' END`,
     [adminEmails]
   );
+
+  // Remove the old branded titles from any bundles created by earlier builds.
+  // New bundles receive AI-generated project names.
+  const oldTitles = await pool.query(`SELECT id FROM ai_survey_bundles WHERE title ILIKE 'LilianTech%Survey%' ORDER BY id ASC`);
+  const renamePool = ['Aether','Hedgehog','Nimbus','Solace','Quill','Mosaic','Orbit','Ember','Harbor','Lumen','Cinder','Vertex','Meadow','Echo','Pioneer','Atlas','Clover','Sable','Nova','Drift'];
+  for (let i = 0; i < oldTitles.rows.length; i++) {
+    await pool.query(`UPDATE ai_survey_bundles SET title=$1 WHERE id=$2`, [renamePool[i % renamePool.length], oldTitles.rows[i].id]);
+  }
   console.log("Database initialized successfully.");
 }
 
@@ -604,7 +617,7 @@ app.get("/api/surveys", requireAuth, async (req, res) => {
     res.json(await getAllSurveyInventory(user, req));
   } catch (error) {
     console.error("Survey inventory error:", error);
-    res.status(500).json({ error: "Unable to load surveys." });
+    res.status(503).json({ error: `Unable to load projects right now. ${error.message || ''}`.trim() });
   }
 });
 
@@ -786,6 +799,41 @@ app.get("/api/account", requireAuth, async (req, res) => {
 });
 
 
+async function generateAiProjectNames(count = 5) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: AI_QUESTION_MODEL,
+      messages: [
+        { role: 'system', content: 'Create short, memorable, abstract project names. Output only the requested JSON.' },
+        { role: 'user', content: `Generate ${count} unique project names for a global opinion research platform. Names should feel like short project codenames (examples of the style only: Aether, Hedgehog), be one or two words, non-political, non-commercial, not existing company or product names, and not contain the words survey, research, LilianTech, AI, project, study, task, test or question.` }
+      ],
+      response_format: {type:'json_schema', json_schema:{name:'project_names', strict:true, schema:{type:'object',additionalProperties:false,properties:{names:{type:'array',items:{type:'string'},minItems:1,maxItems:20}},required:['names']}}}
+    })
+  });
+  if (!response.ok) throw new Error(`OpenAI project-name generation failed (${response.status}).`);
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('OpenAI returned no project names.');
+  const parsed = JSON.parse(content);
+  return [...new Set((parsed.names || []).map(x => String(x).trim()).filter(Boolean))];
+}
+
+const FALLBACK_PROJECT_NAMES = ['Aether','Hedgehog','Nimbus','Solace','Quill','Mosaic','Orbit','Ember','Harbor','Lumen','Cinder','Vertex','Meadow','Echo','Pioneer','Atlas','Clover','Sable','Nova','Drift'];
+
+async function nextProjectName(userId) {
+  const used = await pool.query('SELECT LOWER(title) AS title FROM ai_survey_bundles WHERE user_id=$1', [userId]);
+  const usedSet = new Set(used.rows.map(r => String(r.title || '').toLowerCase()));
+  let candidates = [];
+  try { candidates = await generateAiProjectNames(8); } catch (e) { console.warn('AI project-name generation unavailable:', e.message); }
+  candidates = [...candidates, ...FALLBACK_PROJECT_NAMES];
+  const pick = candidates.find(name => !usedSet.has(String(name).toLowerCase()));
+  return pick || `Project ${Date.now()}`;
+}
+
 async function ensureAiSurveyBundles(userId, minimum = AI_SURVEY_PREFETCH) {
   const existing = await pool.query(
     `SELECT COUNT(*)::int AS count FROM ai_survey_bundles
@@ -815,7 +863,7 @@ async function ensureAiSurveyBundles(userId, minimum = AI_SURVEY_PREFETCH) {
     await pool.query(
       `INSERT INTO ai_survey_bundles (user_id,title,category,question_ids,reward_total)
        VALUES ($1,$2,$3,$4,$5)`,
-      [userId, `LilianTech ${category} Survey`, category,
+      [userId, await nextProjectName(userId), category,
        JSON.stringify(chunk.map(x => Number(x.id))), rewardTotal]
     );
   }
@@ -851,7 +899,7 @@ async function getAllSurveyInventory(user = null, req = null) {
     }));
   } catch (error) {
     console.error('AI survey inventory:', error);
-    return [];
+    throw error;
   }
 }
 
@@ -1052,8 +1100,9 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       question_count:Number(b.question_count), answered_count:Number(b.answered_count)
     }));
     res.set("Cache-Control", "no-store");
+    const isAdmin = getAdminEmails().includes(String(user.email || '').trim().toLowerCase());
     res.json({
-      user,
+      user: {...user, isAdmin},
       stats:{available,inProgress,completed,
         completedEarnings:rows.filter(b=>b.status==='completed').reduce((t,b)=>t+Number(b.reward_total||0),0)},
       activity
@@ -1105,7 +1154,7 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
     const reward=Number(row.reward||AI_QUESTION_REWARD);
     await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`,[reward,user.id]);
     await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'earning',$2,$3,$4)`,
-      [user.id,reward,`Answered LilianTech survey question: ${row.question}`,sid]);
+      [user.id,reward,`Answered ${row.question}`,sid]);
     const count=await client.query(`SELECT COUNT(*)::int AS n FROM survey_activity WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
       [user.id,bundleId]);
     const total=Array.isArray(row.question_ids)?row.question_ids.length:JSON.parse(row.question_ids||'[]').length;
