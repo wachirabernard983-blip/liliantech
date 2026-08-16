@@ -120,6 +120,18 @@ async function initializeDatabase() {
       completed_at TIMESTAMPTZ,
       UNIQUE(user_id, survey_id)
     );
+    CREATE TABLE IF NOT EXISTS ai_questions (
+      id SERIAL PRIMARY KEY,
+      question_hash VARCHAR(64) UNIQUE NOT NULL,
+      category VARCHAR(80) NOT NULL,
+      topic VARCHAR(180) NOT NULL,
+      region VARCHAR(80) NOT NULL DEFAULT 'Global',
+      question TEXT NOT NULL,
+      options JSONB NOT NULL,
+      reward NUMERIC(14,6) NOT NULL DEFAULT 0.005000,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS withdrawals (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -182,6 +194,9 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS user_reward NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS margin NUMERIC(12,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE survey_activity ALTER COLUMN reward TYPE NUMERIC(14,6)`);
 
   // One-time cleanup of development/demo artifacts from earlier builds.
   await pool.query(`DELETE FROM provider_surveys WHERE LOWER(provider_id) IN ('demo','test','local','mock') OR LOWER(title) LIKE '%demo%' OR LOWER(title) LIKE '%test survey%'`);
@@ -229,6 +244,161 @@ function verifyPassword(password, storedHash) {
 
 const authAttempts = new Map();
 const providerSurveyCache = new Map();
+let aiQuestionGenerationPromise = null;
+const AI_QUESTION_MODEL = String(process.env.OPENAI_QUESTION_MODEL || 'gpt-5.6-luna').trim();
+const AI_QUESTION_REWARD = Number(process.env.AI_QUESTION_REWARD || 0.005);
+const AI_QUESTION_BATCH_SIZE = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_BATCH_SIZE || 15)));
+const AI_QUESTION_PREFETCH = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_PREFETCH || 10)));
+
+function questionHash(text) {
+  return crypto.createHash('sha256').update(String(text).trim().toLowerCase().replace(/\s+/g, ' '), 'utf8').digest('hex');
+}
+
+function normalizeQuestionOptions(options) {
+  if (!Array.isArray(options)) return [];
+  return options.map(x => String(x || '').trim()).filter(Boolean).slice(0, 5);
+}
+
+async function generateAiQuestionBatch() {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
+
+  const existing = await pool.query(`SELECT question, topic FROM ai_questions ORDER BY created_at DESC LIMIT 120`);
+  const existingText = existing.rows.map(x => `- ${x.question} [${x.topic}]`).join('\n');
+  const prompt = `Generate ${AI_QUESTION_BATCH_SIZE} UNIQUE global consumer-opinion questions for LilianTech.
+
+Categories must rotate among: Brands & Products, Technology, Shopping, Food & Beverage, Travel, Entertainment, Finance & Services, Lifestyle, Politics & Current Affairs.
+
+Rules:
+- Every question must be multiple choice with exactly 4 or 5 meaningful options.
+- Questions should collect opinions, preferences, awareness, priorities or intentions, not test factual knowledge.
+- Include recognizable global brands when appropriate, but never imply that a brand paid for the question or that an advertiser will pay LilianTech.
+- Political/current-affairs questions must be neutral, non-partisan and suitable for a global audience; ask about opinions, priorities, awareness or perceived importance rather than requiring a current factual answer.
+- Do not target protected traits or ask for highly sensitive personal data.
+- Avoid repetitive wording, near-duplicates, yes/no questions, leading questions, and questions with an obviously correct answer.
+- Questions must be useful for consumer and public-opinion research.
+- Use globally understandable English.
+- Return ONLY valid JSON matching the requested schema.
+
+Previously used questions to avoid duplicating or paraphrasing:
+${existingText || '(none yet)'}`;
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: AI_QUESTION_MODEL,
+      messages: [
+        { role: 'system', content: 'You create concise, neutral, globally relevant multiple-choice opinion questions. Output only the requested JSON.' },
+        { role: 'user', content: prompt }
+      ],
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'liliantech_question_batch',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              questions: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    category: { type: 'string' },
+                    topic: { type: 'string' },
+                    region: { type: 'string' },
+                    question: { type: 'string' },
+                    options: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 5 }
+                  },
+                  required: ['category','topic','region','question','options']
+                }
+              }
+            },
+            required: ['questions']
+          }
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`OpenAI question generation failed (${response.status}): ${detail.slice(0, 500)}`);
+  }
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('OpenAI returned no question data.');
+  const parsed = JSON.parse(content);
+  const created = [];
+  for (const item of (parsed.questions || [])) {
+    const question = String(item.question || '').trim();
+    const options = normalizeQuestionOptions(item.options);
+    if (!question || options.length < 4) continue;
+    const hash = questionHash(question);
+    const result = await pool.query(
+      `INSERT INTO ai_questions (question_hash, category, topic, region, question, options, reward)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (question_hash) DO NOTHING RETURNING id`,
+      [hash, String(item.category || 'General').trim().slice(0,80), String(item.topic || 'General').trim().slice(0,180), String(item.region || 'Global').trim().slice(0,80), question, JSON.stringify(options), Number.isFinite(AI_QUESTION_REWARD) && AI_QUESTION_REWARD > 0 ? AI_QUESTION_REWARD : 0.005]
+    );
+    if (result.rows.length) created.push(result.rows[0].id);
+  }
+  return created.length;
+}
+
+async function ensureAiQuestionInventory(userId, minimum = AI_QUESTION_PREFETCH) {
+  const count = await pool.query(`SELECT COUNT(*)::int AS count FROM ai_questions q WHERE q.active=TRUE AND NOT EXISTS (SELECT 1 FROM survey_activity a WHERE a.user_id=$1 AND a.survey_id=CONCAT('ai-', q.id))`, [userId]);
+  if (Number(count.rows[0].count) >= minimum) return;
+  if (!aiQuestionGenerationPromise) {
+    aiQuestionGenerationPromise = generateAiQuestionBatch().finally(() => { aiQuestionGenerationPromise = null; });
+  }
+  await aiQuestionGenerationPromise;
+}
+
+async function getAiQuestionInventory(userId, limit = AI_QUESTION_PREFETCH) {
+  await ensureAiQuestionInventory(userId, limit);
+  const result = await pool.query(
+    `SELECT q.id, q.category, q.topic, q.region, q.question, q.options, q.reward, q.created_at
+     FROM ai_questions q
+     WHERE q.active=TRUE
+       AND NOT EXISTS (SELECT 1 FROM survey_activity a WHERE a.user_id=$1 AND a.survey_id=CONCAT('ai-', q.id))
+     ORDER BY q.created_at ASC, q.id ASC
+     LIMIT $2`,
+    [userId, limit]
+  );
+  return result.rows.map(q => ({
+    id: `ai-${q.id}`,
+    title: q.question,
+    question: q.question,
+    options: Array.isArray(q.options) ? q.options : JSON.parse(q.options || '[]'),
+    category: q.category,
+    topic: q.topic,
+    region: q.region,
+    reward: Number(q.reward),
+    minutes: 1,
+    provider: 'LilianTech AI',
+    providerId: 'liliantech-ai',
+    source: 'ai',
+    live: true
+  }));
+}
+
+async function getAiQuestionById(surveyId) {
+  const id = String(surveyId || '').replace(/^ai-/, '');
+  if (!/^\d+$/.test(id)) return null;
+  const result = await pool.query(`SELECT id, category, topic, region, question, options, reward FROM ai_questions WHERE id=$1 AND active=TRUE`, [Number(id)]);
+  const q = result.rows[0];
+  if (!q) return null;
+  return {
+    id: `ai-${q.id}`, title: q.question, question: q.question, options: Array.isArray(q.options) ? q.options : JSON.parse(q.options || '[]'),
+    category: q.category, topic: q.topic, region: q.region, reward: Number(q.reward), minutes: 1, provider: 'LilianTech AI', providerId: 'liliantech-ai', source: 'ai', live: true
+  };
+}
 function authRateLimit(req, res, next) {
   const key = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
   const now = Date.now();
@@ -593,126 +763,18 @@ app.get("/api/account", requireAuth, async (req, res) => {
 
 
 async function getAllSurveyInventory(user = null, req = null) {
-  // Only provider-backed inventory is eligible for display or earning.
-  // There is intentionally no local/demo survey inventory.
-  if (!user || !req) return [];
-  return await getLiveProviderSurveys(user, req).catch(err => {
-    console.error('Provider survey fetch:', err);
+  if (!user) return [];
+  try {
+    return await getAiQuestionInventory(user.id, AI_QUESTION_PREFETCH);
+  } catch (error) {
+    console.error('AI question inventory:', error);
     return [];
-  });
-}
-
-async function getLiveProviderSurveys(user, req) {
-  const surveys = [];
-  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().replace('::ffff:','');
-  const ua = String(req.headers['user-agent'] || '');
-  const cacheKey = `${user.id}:${ip}:${crypto.createHash('sha1').update(ua).digest('hex')}`;
-  const cached = providerSurveyCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < 120000) return cached.surveys;
-
-  // CPX Research: user-based API. App ID is public; secure hash stays server-side.
-  const cpxAppId = process.env.CPX_APP_ID || '35372';
-  if (cpxAppId && process.env.CPX_SECURE_HASH) {
-    const q = new URLSearchParams({
-      app_id: cpxAppId, ext_user_id: String(user.id), output_method: 'api',
-      ip_user: ip || '0.0.0.0', user_agent: ua, limit: '12'
-    });
-    if (process.env.CPX_SECURE_HASH) q.set('secure_hash', crypto.createHash('md5').update(`${user.id}-${process.env.CPX_SECURE_HASH}`).digest('hex'));
-    const r = await fetch(`https://live-api.cpx-research.com/api/get-surveys.php?${q}`, { signal: AbortSignal.timeout(10000) });
-    if (r.ok) {
-      const data = await r.json();
-      if (data.status === 'success') {
-        for (const x of (data.surveys || [])) surveys.push({
-          id: `cpx-${x.id}`, externalId: String(x.id), title: `CPX Research survey`,
-          minutes: Number(x.loi || 0), reward: `$${calculateUserReward('cpx', Number(x.payout_publisher_usd || 0)).toFixed(2)}`, publisherRevenue: Number(x.payout_publisher_usd || 0),
-          provider: 'CPX Research', providerId: 'cpx', href: x.href_new || x.href,
-          source: 'live', live: true
-        });
-      }
-    }
   }
-
-  // BitLabs: user-based Survey API. The token is never exposed to the browser.
-  if (process.env.BITLABS_API_TOKEN && process.env.BITLABS_POINTS_PER_USD) {
-    const r = await fetch('https://api.bitlabs.ai/v2/client/surveys?platform=WEB&sdk=CUSTOM', { signal: AbortSignal.timeout(10000),
-      headers: {
-        'X-Api-Token': process.env.BITLABS_API_TOKEN,
-        'X-User-Id': String(user.id),
-        accept: 'application/json'
-      }
-    });
-    if (r.ok) {
-      const data = await r.json();
-      for (const x of (data.surveys || [])) surveys.push({
-        id: `bitlabs-${x.id || x.survey_id}`, externalId: String(x.id || x.survey_id),
-        title: x.title || 'BitLabs survey', minutes: Number(x.loi || x.length_of_interview || 0),
-        reward: `$${bitlabsPointsToUsd(x.value).toFixed(2)}`, publisherRevenue: Number(x.payout || x.cpi || 0), provider: 'BitLabs',
-        providerId: 'bitlabs', href: x.click_url || x.clickUrl, source: 'live', live: true
-      });
-    }
-  }
-
-  // TheoremReach native inventory mode.
-  // IMPORTANT: do not expose the hosted TheoremReach Reward Center as a LilianTech
-  // survey card. That experience can show TheoremReach branding/login and is not the
-  // white-label/native flow requested for LilianTech. When TheoremReach provides the
-  // exact Surveys API endpoint for this publisher, set THEOREMREACH_SURVEYS_API_URL
-  // in Render. The URL may contain {api_key}, {user_id} and {ip} replacement tokens.
-  // We intentionally do not guess an undocumented endpoint.
-  if (process.env.THEOREMREACH_SURVEYS_API_URL && process.env.THEOREMREACH_API_KEY) {
-    try {
-      const template = String(process.env.THEOREMREACH_SURVEYS_API_URL).trim();
-      const apiUrl = template
-        .replaceAll('{api_key}', encodeURIComponent(String(process.env.THEOREMREACH_API_KEY)))
-        .replaceAll('{user_id}', encodeURIComponent(String(user.id)))
-        .replaceAll('{ip}', encodeURIComponent(ip || '0.0.0.0'));
-      const tr = await fetch(apiUrl, {
-        signal: AbortSignal.timeout(10000),
-        headers: { accept: 'application/json' }
-      });
-      if (tr.ok) {
-        const data = await tr.json();
-        const list = Array.isArray(data) ? data : (data.surveys || data.data || data.results || data.items || []);
-        for (const x of (Array.isArray(list) ? list : [])) {
-          const externalId = String(x.id || x.survey_id || x.campaign_id || x.offer_id || '').trim();
-          const href = String(x.click_url || x.clickUrl || x.survey_url || x.entry_url || x.href || x.url || '').trim();
-          if (!externalId || !href) continue;
-          const publisherRevenue = Number(x.payout_publisher_usd ?? x.publisher_payout_usd ?? x.payout ?? x.cpi ?? 0);
-          const explicitReward = Number(x.user_reward_usd ?? x.reward_usd);
-          const reward = Number.isFinite(explicitReward) ? explicitReward : calculateUserReward('theoremreach', publisherRevenue);
-          surveys.push({
-            id: `theoremreach-${externalId}`,
-            externalId,
-            title: String(x.title || x.name || 'Market Research Survey'),
-            minutes: Number(x.loi || x.length_of_interview || x.minutes || x.duration || 0),
-            reward: `$${Math.max(0, reward).toFixed(2)}`,
-            publisherRevenue: Number.isFinite(publisherRevenue) ? publisherRevenue : 0,
-            provider: 'Research Partner',
-            providerId: 'theoremreach',
-            href,
-            source: 'live',
-            live: true
-          });
-        }
-      } else {
-        console.error('TheoremReach Surveys API:', tr.status, await tr.text().catch(() => ''));
-      }
-    } catch (err) {
-      console.error('TheoremReach Surveys API:', err);
-    }
-  }
-
-  // Cint and Dynata are credential/signature based. The adapters are intentionally
-  // gated until approved credentials are supplied, so no fake inventory is shown.
-  const result = surveys.filter(x => x.href);
-  providerSurveyCache.set(cacheKey, { timestamp: Date.now(), surveys: result });
-  return result;
 }
 
 async function getSurveyById(surveyId, user = null, req = null) {
-  if (!user || !req) return null;
-  const live = await getLiveProviderSurveys(user, req).catch(() => []);
-  return live.find(survey => survey.id === surveyId) || null;
+  if (!user) return null;
+  return await getAiQuestionById(surveyId);
 }
 
 app.get("/api/dashboard", requireAuth, async (req, res) => {
@@ -760,141 +822,73 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
 app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
   try {
     const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
+    if (!survey) return res.status(404).json({ error: "Question not found or no longer available." });
 
-    if (!survey || (isProduction && !survey.live)) {
-      return res.status(404).json({ error: "Survey not found or not available for live earning." });
+    const existing = await pool.query(`SELECT status FROM survey_activity WHERE user_id=$1 AND survey_id=$2`, [req.session.userId, survey.id]);
+    if (existing.rows.length && existing.rows[0].status === 'completed') {
+      return res.status(409).json({ error: "You have already answered this question." });
     }
-
-    const existing = await pool.query(
-      `SELECT status FROM survey_activity
-       WHERE user_id = $1 AND survey_id = $2`,
-      [req.session.userId, survey.id]
-    );
-
-    if (existing.rows.length > 0) {
-      // Allow users to resume a provider survey that was already marked in progress.
-      // TheoremReach needs a fresh authenticated entry URL so the Continue button
-      // actually launches the survey instead of silently doing nothing.
-      if (survey.providerId === 'theoremreach') {
-        return res.json({
-          message: "Continuing your TheoremReach survey.",
-          status: existing.rows[0].status,
-          redirectUrl: survey.href,
-          provider: survey.provider
-        });
-      }
-      return res.json({
-        message: "Survey already started.",
-        status: existing.rows[0].status,
-        redirectUrl: survey.href,
-        provider: survey.provider
-      });
-    }
-
-    const reward = Number(String(survey.reward).replace(/[^0-9.]/g, "")) || 0;
-
-    if (survey.providerId === 'theoremreach') {
+    if (!existing.rows.length) {
       await pool.query(
         `INSERT INTO survey_activity (user_id, survey_id, title, reward, status) VALUES ($1,$2,$3,$4,'in_progress')`,
-        [req.session.userId, survey.id, survey.title, 0]
+        [req.session.userId, survey.id, survey.title, survey.reward]
       );
-      return res.status(201).json({ message: 'TheoremReach survey center opened.', status: 'in_progress', redirectUrl: survey.href, provider: survey.provider });
     }
-
-    if (survey.live && survey.href) {
-      await pool.query(
-        `INSERT INTO survey_activity (user_id, survey_id, title, reward, status) VALUES ($1,$2,$3,$4,'in_progress')`,
-        [req.session.userId, survey.id, survey.title, reward]
-      );
-      return res.status(201).json({ message: "Survey opened. Completion is confirmed by the provider.", status: "in_progress", redirectUrl: survey.href, provider: survey.provider });
-    }
-
-    await pool.query(
-      `INSERT INTO survey_activity
-       (user_id, survey_id, title, reward, status)
-       VALUES ($1, $2, $3, $4, 'in_progress')`,
-      [req.session.userId, survey.id, survey.title, reward]
-    );
 
     res.status(201).json({
-      message: "Survey started.",
-      status: "in_progress"
+      message: "Question ready.",
+      status: "in_progress",
+      question: survey.question,
+      options: survey.options,
+      category: survey.category,
+      topic: survey.topic,
+      reward: survey.reward
     });
   } catch (error) {
-    console.error("Start survey error:", error);
-    res.status(500).json({ error: "Unable to start survey." });
+    console.error("Start AI question error:", error);
+    res.status(500).json({ error: "Unable to start the question." });
   }
 });
 
 app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
   const client = await pool.connect();
-
   try {
     const survey = await getSurveyById(req.params.surveyId, await getUserById(req.session.userId), req);
+    if (!survey) return res.status(404).json({ error: "Question not found." });
 
-    if (!survey) {
-      return res.status(404).json({ error: "Survey not found." });
+    const answer = String(req.body?.answer || '').trim();
+    if (!answer || !survey.options.includes(answer)) {
+      return res.status(400).json({ error: "Please select one of the available answers." });
     }
 
-    await client.query("BEGIN");
-
+    await client.query('BEGIN');
     const activity = await client.query(
-      `SELECT id, reward, status
-       FROM survey_activity
-       WHERE user_id = $1 AND survey_id = $2
-       FOR UPDATE`,
+      `SELECT id, reward, status FROM survey_activity WHERE user_id=$1 AND survey_id=$2 FOR UPDATE`,
       [req.session.userId, survey.id]
     );
-
-    if (activity.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Start the survey before completing it." });
+    if (!activity.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: "Start the question before answering it." });
+    }
+    if (activity.rows[0].status === 'completed') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: "This question has already been answered." });
     }
 
-    if (activity.rows[0].status === "completed") {
-      await client.query("ROLLBACK");
-      return res.json({ message: "Survey already completed.", status: "completed" });
-    }
-
-    const reward = Number(activity.rows[0].reward || 0);
-    const isLiveProviderSurvey = Boolean(survey.live);
-    const isImportedProviderSurvey = String(survey.id).startsWith("provider-");
-    if (isLiveProviderSurvey || isImportedProviderSurvey || isProduction) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "This survey can only be completed and credited by its approved provider." });
-    }
-
+    const reward = Number(activity.rows[0].reward || survey.reward || 0);
+    await client.query(`UPDATE survey_activity SET status='completed', completed_at=NOW() WHERE id=$1`, [activity.rows[0].id]);
+    await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`, [reward, req.session.userId]);
     await client.query(
-      `UPDATE survey_activity
-       SET status = 'completed', completed_at = NOW()
-       WHERE id = $1`,
-      [activity.rows[0].id]
+      `INSERT INTO transactions (user_id, type, amount, description, reference_id) VALUES ($1,'earning',$2,$3,$4)`,
+      [req.session.userId, reward, `Answered ${survey.category}: ${survey.title}`, survey.id]
     );
+    await client.query('COMMIT');
 
-    await client.query(
-      `UPDATE users
-       SET balance = balance + $1
-       WHERE id = $2`,
-      [reward, req.session.userId]
-    );
-
-    await client.query(
-      `INSERT INTO transactions (user_id, type, amount, description, reference_id)
-       VALUES ($1, 'earning', $2, $3, $4)`,
-      [req.session.userId, reward, `Completed ${survey.title}`, survey.id]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Survey completed and reward added.",
-      status: "completed",
-      reward
-    });
+    res.json({ message: "Answer recorded and reward added.", status: "completed", reward, answer });
   } catch (error) {
-    await client.query("ROLLBACK").catch(() => {});
-    console.error("Complete survey error:", error);
-    res.status(500).json({ error: "Unable to complete survey." });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error("Complete AI question error:", error);
+    res.status(500).json({ error: "Unable to record your answer." });
   } finally {
     client.release();
   }

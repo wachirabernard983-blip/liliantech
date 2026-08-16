@@ -16,38 +16,18 @@ services:
         value: "wachirabernard193@gmail.com"
       - key: ADMIN_NAME
         value: "Bernard Wachira"
-      - key: CPX_APP_ID
-        value: "35372"
       - key: REWARD_SHARE
         value: "0.70"
-      - key: CPX_REWARD_SHARE
-        value: "0.70"
-      - key: BITLABS_REWARD_SHARE
-        value: "0.70"
-      - key: THEOREMREACH_EXCHANGE_RATE
-        value: "100"
-      - key: THEOREMREACH_API_KEY
+      - key: OPENAI_API_KEY
         sync: false
-      - key: THEOREMREACH_SECRET_KEY
-        sync: false
-      - key: THEOREMREACH_ENTRY_URL
-        sync: false
-      - key: THEOREMREACH_SURVEYS_API_URL
-        sync: false
-      - key: CPX_SECURE_HASH
-        sync: false
-      - key: BITLABS_API_TOKEN
-        sync: false
-      - key: BITLABS_APP_SECRET
-        sync: false
-      - key: BITLABS_POINTS_PER_USD
-        sync: false
-      - key: CINT_JWT
-        sync: false
-      - key: DYNATA_ACCESS_KEY
-        sync: false
-      - key: DYNATA_SECRET_KEY
-        sync: false
+      - key: OPENAI_QUESTION_MODEL
+        value: "gpt-5.6-luna"
+      - key: AI_QUESTION_REWARD
+        value: "0.005"
+      - key: AI_QUESTION_BATCH_SIZE
+        value: "15"
+      - key: AI_QUESTION_PREFETCH
+        value: "10"
       - key: PAYPAL_ENV
         value: "sandbox"
       - key: PAYPAL_CLIENT_ID
