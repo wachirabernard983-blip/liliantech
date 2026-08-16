@@ -1,6 +1,6 @@
 {
   "name": "liliantech",
-  "version": "6.0.0",
+  "version": "6.1.0",
   "private": true,
   "scripts": {
     "start": "node server.js"
@@ -9,6 +9,8 @@
     "express": "^4.21.2",
     "express-session": "^1.18.2",
     "pg": "^8.16.3",
-    "connect-pg-simple": "^10.0.0"
+    "connect-pg-simple": "^10.0.0",
+    "nodemailer": "^7.0.5",
+    "web-push": "^3.6.7"
   }
 }

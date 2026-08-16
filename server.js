@@ -82,9 +82,12 @@ app.get("/surveys", (req, res) => {
 app.get("/admin.html", async (req, res) => {
   if (!req.session.userId) return res.redirect("/login.html");
   try {
-    const result = await pool.query('SELECT full_name, email, role FROM users WHERE id=$1', [req.session.userId]);
-    if (!isDesignatedAdmin(result.rows[0])) {
-      return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to the designated LilianTech administrator.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
+    const result = await pool.query('SELECT full_name, email FROM users WHERE id=$1', [req.session.userId]);
+    const user = result.rows[0];
+    // Admin page access is based ONLY on the three explicitly authorized emails.
+    // The database role is not trusted for this page gate.
+    if (!user || !getAdminEmails().includes(String(user.email || '').trim().toLowerCase())) {
+      return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to authorized administrators.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
     }
     return res.sendFile(path.join(__dirname, "public", "admin.html"));
   } catch (error) {
@@ -92,6 +95,8 @@ app.get("/admin.html", async (req, res) => {
     return res.status(500).send("Unable to verify administrator access.");
   }
 });
+
+app.get('/sw.js',(req,res)=>res.sendFile(path.join(__dirname,'public','sw.js'),{headers:{'Cache-Control':'no-cache'}}));
 
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -102,7 +107,7 @@ async function initializeDatabase() {
       full_name VARCHAR(120) NOT NULL,
       email VARCHAR(255) UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      balance NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      balance NUMERIC(14,6) NOT NULL DEFAULT 0.000000,
       role VARCHAR(20) NOT NULL DEFAULT 'member',
       phone VARCHAR(40),
       payment_method VARCHAR(40),
@@ -114,7 +119,7 @@ async function initializeDatabase() {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       survey_id VARCHAR(120) NOT NULL,
       title VARCHAR(255) NOT NULL,
-      reward NUMERIC(12,2) NOT NULL DEFAULT 0.00,
+      reward NUMERIC(14,6) NOT NULL DEFAULT 0.000000,
       status VARCHAR(20) NOT NULL DEFAULT 'in_progress',
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       completed_at TIMESTAMPTZ,
@@ -144,6 +149,47 @@ async function initializeDatabase() {
       completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS survey_campaigns (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(120) NOT NULL,
+      category VARCHAR(80) NOT NULL DEFAULT 'Global Opinion',
+      question_ids JSONB NOT NULL,
+      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.050000,
+      max_responses INTEGER NOT NULL DEFAULT 100,
+      response_count INTEGER NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS survey_assignments (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER NOT NULL REFERENCES survey_campaigns(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status VARCHAR(20) NOT NULL DEFAULT 'available',
+      answers JSONB,
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      UNIQUE(campaign_id,user_id)
+    );
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS notification_log (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER REFERENCES survey_campaigns(id) ON DELETE SET NULL,
+      channel VARCHAR(20) NOT NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      status VARCHAR(30) NOT NULL,
+      detail TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS withdrawals (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -161,7 +207,7 @@ async function initializeDatabase() {
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       type VARCHAR(30) NOT NULL,
-      amount NUMERIC(12,2) NOT NULL,
+      amount NUMERIC(14,6) NOT NULL,
       description VARCHAR(255) NOT NULL,
       reference_id VARCHAR(120),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -206,9 +252,17 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS user_reward NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS margin NUMERIC(12,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS max_responses INTEGER NOT NULL DEFAULT 100`);
+  await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS response_count INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_survey_campaigns_status ON survey_campaigns(status,created_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_survey_assignments_user ON survey_assignments(user_id,status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)`);
   await pool.query(`ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(14,6)`);
   await pool.query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(14,6)`);
   await pool.query(`ALTER TABLE survey_activity ALTER COLUMN reward TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE users ALTER COLUMN balance TYPE NUMERIC(14,6)`);
+  await pool.query(`ALTER TABLE transactions ALTER COLUMN amount TYPE NUMERIC(14,6)`);
 
   // One-time cleanup of development/demo artifacts from earlier builds.
   await pool.query(`DELETE FROM provider_surveys WHERE LOWER(provider_id) IN ('demo','test','local','mock') OR LOWER(title) LIKE '%demo%' OR LOWER(title) LIKE '%test survey%'`);
@@ -223,6 +277,14 @@ async function initializeDatabase() {
     `UPDATE users SET role = CASE WHEN LOWER(email)=ANY($1::text[]) THEN 'admin' ELSE 'member' END`,
     [adminEmails]
   );
+
+  // Remove the old branded titles from any bundles created by earlier builds.
+  // New bundles receive AI-generated project names.
+  const oldTitles = await pool.query(`SELECT id FROM ai_survey_bundles WHERE title ILIKE 'LilianTech%Survey%' ORDER BY id ASC`);
+  const renamePool = ['Aether','Hedgehog','Nimbus','Solace','Quill','Mosaic','Orbit','Ember','Harbor','Lumen','Cinder','Vertex','Meadow','Echo','Pioneer','Atlas','Clover','Sable','Nova','Drift'];
+  for (let i = 0; i < oldTitles.rows.length; i++) {
+    await pool.query(`UPDATE ai_survey_bundles SET title=$1 WHERE id=$2`, [renamePool[i % renamePool.length], oldTitles.rows[i].id]);
+  }
   console.log("Database initialized successfully.");
 }
 
@@ -266,6 +328,15 @@ const AI_QUESTION_BATCH_SIZE = Math.max(10, Math.min(50, Number(process.env.AI_Q
 const AI_SURVEY_SIZE = 10;
 const AI_SURVEY_PREFETCH = Math.max(2, Math.min(10, Number(process.env.AI_SURVEY_PREFETCH || 3)));
 const AI_QUESTION_PREFETCH = Math.max(5, Math.min(25, Number(process.env.AI_QUESTION_PREFETCH || 10)));
+const SURVEY_MAX_RESPONSES = Math.max(1, Math.min(1000000, Number(process.env.SURVEY_MAX_RESPONSES || 100)));
+const SURVEY_PREFETCH = Math.max(1, Math.min(20, Number(process.env.SURVEY_PREFETCH || 3)));
+const NOTIFICATION_EMAIL_ENABLED = String(process.env.NOTIFICATION_EMAIL_ENABLED || 'true').toLowerCase() === 'true';
+const NOTIFICATION_PUSH_ENABLED = String(process.env.NOTIFICATION_PUSH_ENABLED || 'true').toLowerCase() === 'true';
+const notificationClients = new Set();
+let nodemailer = null;
+let webpush = null;
+try { nodemailer = require('nodemailer'); } catch {}
+try { webpush = require('web-push'); } catch {}
 
 function questionHash(text) {
   return crypto.createHash('sha256').update(String(text).trim().toLowerCase().replace(/\s+/g, ' '), 'utf8').digest('hex');
@@ -369,7 +440,7 @@ ${existingText || '(none yet)'}`;
 }
 
 async function ensureAiQuestionInventory(userId, minimum = AI_QUESTION_PREFETCH) {
-  const count = await pool.query(`SELECT COUNT(*)::int AS count FROM ai_questions q WHERE q.active=TRUE AND NOT EXISTS (SELECT 1 FROM survey_activity a WHERE a.user_id=$1 AND a.survey_id=CONCAT('ai-', q.id))`, [userId]);
+  const count = await pool.query(`SELECT COUNT(*)::int AS count FROM ai_questions q WHERE q.active=TRUE`, []);
   if (Number(count.rows[0].count) >= minimum) return;
   if (!aiQuestionGenerationPromise) {
     aiQuestionGenerationPromise = generateAiQuestionBatch().finally(() => { aiQuestionGenerationPromise = null; });
@@ -508,14 +579,13 @@ function theoremReachEntryUrl(userId) {
 }
 
 function getAdminEmails() {
-  const configured = String(process.env.ADMIN_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-  const legacy = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
-  const defaults = [
+  // Hard-coded authorization list. Render environment variables cannot expand
+  // administrator access beyond these three accounts.
+  return [
     'wachirabernard983@gmail.com',
     'stellawanjiku90@gmail.com',
     'wachirabernard193@gmail.com'
   ];
-  return [...new Set([...(configured.length ? configured : defaults), ...(legacy ? [legacy] : [])])];
 }
 
 function getAdminIdentity() {
@@ -604,7 +674,7 @@ app.get("/api/surveys", requireAuth, async (req, res) => {
     res.json(await getAllSurveyInventory(user, req));
   } catch (error) {
     console.error("Survey inventory error:", error);
-    res.status(500).json({ error: "Unable to load surveys." });
+    res.status(503).json({ error: `Unable to load projects right now. ${error.message || ''}`.trim() });
   }
 });
 
@@ -786,6 +856,41 @@ app.get("/api/account", requireAuth, async (req, res) => {
 });
 
 
+async function generateAiProjectNames(count = 5) {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured.');
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      model: AI_QUESTION_MODEL,
+      messages: [
+        { role: 'system', content: 'Create short, memorable, abstract project names. Output only the requested JSON.' },
+        { role: 'user', content: `Generate ${count} unique project names for a global opinion research platform. Names should feel like short project codenames (examples of the style only: Aether, Hedgehog), be one or two words, non-political, non-commercial, not existing company or product names, and not contain the words survey, research, LilianTech, AI, project, study, task, test or question.` }
+      ],
+      response_format: {type:'json_schema', json_schema:{name:'project_names', strict:true, schema:{type:'object',additionalProperties:false,properties:{names:{type:'array',items:{type:'string'},minItems:1,maxItems:20}},required:['names']}}}
+    })
+  });
+  if (!response.ok) throw new Error(`OpenAI project-name generation failed (${response.status}).`);
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('OpenAI returned no project names.');
+  const parsed = JSON.parse(content);
+  return [...new Set((parsed.names || []).map(x => String(x).trim()).filter(Boolean))];
+}
+
+const FALLBACK_PROJECT_NAMES = ['Aether','Hedgehog','Nimbus','Solace','Quill','Mosaic','Orbit','Ember','Harbor','Lumen','Cinder','Vertex','Meadow','Echo','Pioneer','Atlas','Clover','Sable','Nova','Drift'];
+
+async function nextProjectName(userId) {
+  const used = await pool.query('SELECT LOWER(title) AS title FROM ai_survey_bundles WHERE user_id=$1', [userId]);
+  const usedSet = new Set(used.rows.map(r => String(r.title || '').toLowerCase()));
+  let candidates = [];
+  try { candidates = await generateAiProjectNames(8); } catch (e) { console.warn('AI project-name generation unavailable:', e.message); }
+  candidates = [...candidates, ...FALLBACK_PROJECT_NAMES];
+  const pick = candidates.find(name => !usedSet.has(String(name).toLowerCase()));
+  return pick || `Project ${Date.now()}`;
+}
+
 async function ensureAiSurveyBundles(userId, minimum = AI_SURVEY_PREFETCH) {
   const existing = await pool.query(
     `SELECT COUNT(*)::int AS count FROM ai_survey_bundles
@@ -815,75 +920,86 @@ async function ensureAiSurveyBundles(userId, minimum = AI_SURVEY_PREFETCH) {
     await pool.query(
       `INSERT INTO ai_survey_bundles (user_id,title,category,question_ids,reward_total)
        VALUES ($1,$2,$3,$4,$5)`,
-      [userId, `LilianTech ${category} Survey`, category,
+      [userId, await nextProjectName(userId), category,
        JSON.stringify(chunk.map(x => Number(x.id))), rewardTotal]
     );
   }
 }
 
-async function getAllSurveyInventory(user = null, req = null) {
-  if (!user) return [];
-  try {
-    await ensureAiSurveyBundles(user.id);
-    const result = await pool.query(
-      `SELECT b.id,b.title,b.category,b.reward_total,b.status,b.started_at,b.completed_at,
-              jsonb_array_length(b.question_ids) AS question_count,
-              (SELECT COUNT(*) FROM survey_activity a
-               WHERE a.user_id=b.user_id AND a.survey_id LIKE CONCAT('bundle-',b.id,'-q-%')
-                 AND a.status='completed') AS answered_count
-       FROM ai_survey_bundles b
-       WHERE b.user_id=$1 AND b.status IN ('available','in_progress')
-       ORDER BY b.id ASC`, [user.id]
-    );
-    return result.rows.map(b => ({
-      id: `bundle-${b.id}`,
-      title: b.title,
-      category: b.category,
-      reward: Number(b.reward_total),
-      questionCount: Number(b.question_count),
-      answeredCount: Number(b.answered_count),
-      remainingCount: Number(b.question_count) - Number(b.answered_count),
-      status: b.status,
-      startedAt: b.started_at,
-      provider: 'LilianTech AI',
-      providerId: 'liliantech-ai',
-      source: 'ai'
-    }));
-  } catch (error) {
-    console.error('AI survey inventory:', error);
-    return [];
+
+function getNotificationEmailTransport() {
+  if (!nodemailer) return null;
+  const host=String(process.env.SMTP_HOST||'').trim();
+  const user=String(process.env.SMTP_USER||'').trim();
+  const pass=String(process.env.SMTP_PASS||'').trim();
+  if(!host||!user||!pass) return null;
+  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass}});
+}
+function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'notifications@liliantech.online').trim();}
+async function sendNewSurveyNotifications(campaign) {
+  const users=await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL ORDER BY id`);
+  const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
+  const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
+  if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
+    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:notifications@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
+  }
+  for(const u of users.rows){
+    const subject=`New survey available: ${campaign.title}`;
+    const text=`A new 10-question survey, ${campaign.title}, is now available on LilianTech. Reward: $${Number(campaign.reward_total).toFixed(3)}. Sign in to answer all 10 questions.`;
+    if(emailer){try{await emailer.sendMail({from:notificationFrom(),to:u.email,subject,text,html:`<p>Hello ${String(u.full_name||'')},</p><p>A new 10-question survey, <strong>${campaign.title}</strong>, is now available on LilianTech.</p><p>Reward: <strong>$${Number(campaign.reward_total).toFixed(3)}</strong></p><p>Sign in to answer all 10 questions.</p><p><a href="https://liliantech.online/dashboard.html#surveys">Open LilianTech</a></p>`});await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'email','sent')`,[campaign.id,u.id]);}catch(e){await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status,detail) VALUES($1,$2,'email','failed',$3)`,[campaign.id,u.id,String(e.message).slice(0,500)]);}}
+    if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
+      const subs=await pool.query(`SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=$1`,[u.id]);
+      for(const sub of subs.rows){try{await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},JSON.stringify({title:`New survey: ${campaign.title}`,body:`10 questions • Reward $${Number(campaign.reward_total).toFixed(3)}`,url:'/dashboard.html#surveys'}));await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'push','sent')`,[campaign.id,u.id]);}catch(e){if(e.statusCode===404||e.statusCode===410) await pool.query(`DELETE FROM push_subscriptions WHERE id=$1`,[sub.id]);}}
+    }
   }
 }
-
+function broadcastSurveyEvent(payload){const data=`data: ${JSON.stringify(payload)}\n\n`;for(const res of notificationClients){try{res.write(data);}catch{notificationClients.delete(res);}}}
+async function getActiveCampaignsForUser(userId) {
+  await assignAvailableCampaigns(userId, SURVEY_PREFETCH);
+  const result=await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.max_responses,c.response_count,c.status,c.created_at,a.status AS assignment_status,a.started_at,a.completed_at,
+    jsonb_array_length(c.question_ids) AS question_count,
+    COALESCE((SELECT COUNT(*) FROM jsonb_object_keys(COALESCE(a.answers,'{}'::jsonb))),0)::int AS answered_count
+    FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id
+    WHERE a.user_id=$1 AND a.status IN ('available','in_progress') AND c.status='active' AND (c.expires_at IS NULL OR c.expires_at>NOW())
+    ORDER BY c.created_at ASC,c.id ASC`,[userId]);
+  return result.rows.map(r=>({id:`campaign-${r.id}`,title:r.title,category:r.category,reward:Number(r.reward_total),questionCount:Number(r.question_count),answeredCount:Number(r.answered_count),remainingCount:Number(r.question_count)-Number(r.answered_count),status:r.assignment_status,startedAt:r.started_at,availableResponses:Math.max(0,Number(r.max_responses)-Number(r.response_count)),maxResponses:Number(r.max_responses),responseCount:Number(r.response_count),source:'ai'}));
+}
+async function assignAvailableCampaigns(userId, minimum=3){
+  const existing=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1 AND a.status IN ('available','in_progress') AND c.status='active' AND (c.expires_at IS NULL OR c.expires_at>NOW())`,[userId]);
+  let need=Math.max(0,minimum-Number(existing.rows[0].count));
+  if(!need) return;
+  let active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC LIMIT $2::integer`,[Number(userId),Number(need)]);
+  if(active.rows.length<need){await createSurveyCampaigns(Math.max(need-active.rows.length,1));active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC LIMIT $2::integer`,[Number(userId),Number(need)]);}
+  for(const r of active.rows){await pool.query(`INSERT INTO survey_assignments(campaign_id,user_id,status) VALUES($1,$2,'available') ON CONFLICT(campaign_id,user_id) DO NOTHING`,[r.id,userId]);}
+}
+async function createSurveyCampaigns(count=1){
+  const existing=await pool.query(`SELECT question_ids FROM survey_campaigns`);
+  const used=new Set(); for(const r of existing.rows){const ids=Array.isArray(r.question_ids)?r.question_ids:JSON.parse(r.question_ids||'[]'); ids.forEach(x=>used.add(Number(x)));}
+  const needed=count*AI_SURVEY_SIZE;
+  const availableCount=Number((await pool.query(`SELECT COUNT(*)::int AS n FROM ai_questions WHERE active=TRUE ${used.size?'AND id <> ALL($1::int[])':''}`,used.size?[[...used]]:[])).rows[0].n||0);
+  if(availableCount<needed){await ensureAiQuestionInventory(null, Math.max(AI_QUESTION_BATCH_SIZE, needed+used.size+10));}
+  const q=await pool.query(`SELECT id,category,reward FROM ai_questions WHERE active=TRUE ${used.size?'AND id <> ALL($1::int[])':''} ORDER BY created_at ASC,id ASC LIMIT $${used.size?2:1}`, used.size?[[...used],needed]:[needed]);
+  let made=[];
+  for(let i=0;i+AI_SURVEY_SIZE<=q.rows.length && made.length<count;i+=AI_SURVEY_SIZE){const chunk=q.rows.slice(i,i+AI_SURVEY_SIZE);const cats=[...new Set(chunk.map(x=>x.category))];const category=cats.length===1?cats[0]:'Global Opinion';const rewardTotal=chunk.reduce((a,x)=>a+Number(x.reward||AI_QUESTION_REWARD),0);const title=await nextGlobalSurveyName();const ins=await pool.query(`INSERT INTO survey_campaigns(title,category,question_ids,reward_total,max_responses,status) VALUES($1,$2,$3,$4,$5,'active') RETURNING id,title,category,reward_total,max_responses,response_count`,[title,category,JSON.stringify(chunk.map(x=>Number(x.id))),rewardTotal,SURVEY_MAX_RESPONSES]);made.push(ins.rows[0]);broadcastSurveyEvent({type:'new-survey',survey: {id:`campaign-${ins.rows[0].id}`,title:ins.rows[0].title}});}
+  for(const c of made){sendNewSurveyNotifications(c).catch(e=>console.warn('Notification dispatch failed:',e.message));}
+  return made;
+}
+async function nextGlobalSurveyName(){const used=await pool.query(`SELECT LOWER(title) title FROM survey_campaigns`);const set=new Set(used.rows.map(r=>String(r.title||'').toLowerCase()));let candidates=[];try{candidates=await generateAiProjectNames(10);}catch{};candidates=[...candidates,...FALLBACK_PROJECT_NAMES];const pick=candidates.find(x=>!set.has(String(x).toLowerCase()));return pick||`Aether-${Date.now()}`;}
+async function getAllSurveyInventory(user = null, req = null) {
+  if (!user) return [];
+  return await getActiveCampaignsForUser(user.id);
+}
 async function getSurveyById(surveyId, user = null, req = null) {
-  if (!user) return null;
-  const id = String(surveyId || '').replace(/^bundle-/, '');
-  if (!/^\d+$/.test(id)) return null;
-  const bundle = await pool.query(
-    `SELECT id,title,category,reward_total,status,question_ids
-     FROM ai_survey_bundles WHERE id=$1 AND user_id=$2`, [Number(id), user.id]
-  );
-  const b = bundle.rows[0];
-  if (!b) return null;
-  const ids = Array.isArray(b.question_ids) ? b.question_ids : JSON.parse(b.question_ids || '[]');
-  const questions = await pool.query(
-    `SELECT id,category,topic,region,question,options,reward
-     FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`, [ids]
-  );
-  const answered = await pool.query(
-    `SELECT survey_id FROM survey_activity
-     WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
-    [user.id, Number(id)]
-  );
-  const answeredIds = new Set(answered.rows.map(r => String(r.survey_id).split('-q-')[1]));
-  return {
-    id:`bundle-${b.id}`, title:b.title, category:b.category, reward:Number(b.reward_total),
-    status:b.status, questions:questions.rows.map(q => ({
-      id:`bundle-${b.id}-q-${q.id}`, questionId:q.id, category:q.category, topic:q.topic,
-      region:q.region, question:q.question, options:Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]'),
-      reward:Number(q.reward), answered:answeredIds.has(String(q.id))
-    })).filter(q=>!q.answered)
-  };
+  if(!user) return null;
+  const id=String(surveyId||'').replace(/^campaign-/,'');
+  if(!/^\d+$/.test(id)) return null;
+  const r=await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.max_responses,c.response_count,c.status,c.question_ids,a.status AS assignment_status,a.answers
+    FROM survey_campaigns c JOIN survey_assignments a ON a.campaign_id=c.id AND a.user_id=$2::integer WHERE c.id=$1::integer`,[Number(id),Number(user.id)]);
+  const b=r.rows[0]; if(!b) return null;
+  const ids=(Array.isArray(b.question_ids)?b.question_ids:JSON.parse(b.question_ids||'[]')).map(Number).filter(Number.isFinite);
+  const qs=await pool.query(`SELECT id,category,topic,region,question,options,reward FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`,[ids]);
+  let answers={}; try{answers=typeof b.answers==='object'&&b.answers?b.answers:JSON.parse(b.answers||'{}')}catch{}
+  return {id:`campaign-${b.id}`,title:b.title,category:b.category,reward:Number(b.reward_total),status:b.assignment_status,questionCount:ids.length,questions:qs.rows.map((q,i)=>({id:q.id,questionNumber:i+1,category:q.category,topic:q.topic,region:q.region,question:q.question,options:Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]'),reward:Number(q.reward),answer:answers[String(q.id)]||null}))};
 }
 
 function getWithdrawalMethods() {
@@ -918,7 +1034,7 @@ app.get('/api/earnings', requireAuth, async (req, res) => {
     if (!user) return res.status(401).json({error:'Account not found.'});
     const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
     const tx = await pool.query(`SELECT id,type,amount,description,reference_id,created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
-    const completed = await pool.query(`SELECT COUNT(*)::int AS count FROM ai_survey_bundles WHERE user_id=$1 AND status='completed'`, [req.session.userId]);
+    const completed = await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments WHERE user_id=$1 AND status='completed'`, [req.session.userId]);
     const pendingAmount = Number(pending.rows[0].amount || 0);
     res.json({ total:Number(user.balance||0), pending:pendingAmount, available:Math.max(0,Number(user.balance||0)-pendingAmount), transactions:tx.rows, minimumWithdrawal:getMinimumWithdrawal(), completedSurveys:Number(completed.rows[0].count||0) });
   } catch(e) { console.error('Earnings error:',e); res.status(500).json({error:'Unable to load earnings.'}); }
@@ -1028,97 +1144,41 @@ app.get('/api/admin/provider-surveys', requireAdmin, async (req,res)=>res.json({
 app.post('/api/admin/provider-surveys', requireAdmin, async (req,res)=>res.status(410).json({error:'External survey providers are disabled while LilianTech uses AI-generated surveys.'}));
 app.get('/api/admin/providers', requireAdmin, async (req,res)=>res.json({providers:[]}));
 
-app.get("/api/dashboard", requireAuth, async (req, res) => {
-  try {
-    const user = await getUserById(req.session.userId);
-    if (!user) return res.status(401).json({ error: "Account not found." });
+app.get("/api/dashboard", requireAuth, async (req,res)=>{try{const user=await getUserById(req.session.userId);if(!user)return res.status(401).json({error:'Account not found.'});const rows=(await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.status,c.created_at,c.expires_at,a.status AS assignment_status,a.started_at,a.completed_at FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1::integer ORDER BY c.created_at DESC`,[user.id])).rows;const active=rows.filter(x=>x.assignment_status!=='completed'&&x.status==='active');const available=active.filter(x=>x.assignment_status==='available').length;const inProgress=active.filter(x=>x.assignment_status==='in_progress').length;const completed=rows.filter(x=>x.assignment_status==='completed').length;res.set('Cache-Control','no-store');res.json({user:{...user,isAdmin:isDesignatedAdmin(user)},stats:{available,inProgress,completed,completedEarnings:rows.filter(x=>x.assignment_status==='completed').reduce((t,x)=>t+Number(x.reward_total||0),0)},activity:rows.map(x=>({survey_id:`campaign-${x.id}`,title:x.title,reward:Number(x.reward_total),status:x.assignment_status,started_at:x.started_at,completed_at:x.completed_at}))});}catch(e){console.error('Dashboard error:',e);res.status(500).json({error:'Unable to load dashboard.'});}});
 
-    // Do not block dashboard loading on OpenAI question generation.
-    // The Surveys endpoint will generate/prefetch bundles separately.
-    const bundles = await pool.query(
-      `SELECT b.id,b.title,b.category,b.reward_total,b.status,b.started_at,b.completed_at,
-              jsonb_array_length(b.question_ids) AS question_count,
-              (SELECT COUNT(*) FROM survey_activity a WHERE a.user_id=b.user_id
-               AND a.survey_id LIKE CONCAT('bundle-',b.id,'-q-%') AND a.status='completed') AS answered_count
-       FROM ai_survey_bundles b WHERE b.user_id=$1 ORDER BY b.created_at DESC`, [user.id]
-    );
-    const rows = bundles.rows;
-    const available = rows.filter(b => b.status === 'available').length;
-    const inProgress = rows.filter(b => b.status === 'in_progress').length;
-    const completed = rows.filter(b => b.status === 'completed').length;
-    const activity = rows.map(b => ({
-      survey_id:`bundle-${b.id}`, title:b.title, reward:Number(b.reward_total),
-      status:b.status, started_at:b.started_at, completed_at:b.completed_at,
-      question_count:Number(b.question_count), answered_count:Number(b.answered_count)
-    }));
-    res.set("Cache-Control", "no-store");
-    res.json({
-      user,
-      stats:{available,inProgress,completed,
-        completedEarnings:rows.filter(b=>b.status==='completed').reduce((t,b)=>t+Number(b.reward_total||0),0)},
-      activity
-    });
-  } catch (error) {
-    console.error("Dashboard error:", error);
-    res.status(500).json({ error: "Unable to load dashboard." });
-  }
+app.post("/api/surveys/:surveyId/start", requireAuth, async (req,res)=>{
+  try{const user=await getUserById(req.session.userId);const survey=await getSurveyById(req.params.surveyId,user,req);if(!survey)return res.status(404).json({error:'Survey not found.'});if(survey.status==='completed')return res.status(409).json({error:'This survey is already completed.'});await pool.query(`UPDATE survey_assignments SET status='in_progress',started_at=COALESCE(started_at,NOW()) WHERE campaign_id=$1::integer AND user_id=$2::integer`,[Number(String(req.params.surveyId).replace(/^campaign-/,'')),Number(user.id)]);survey.status='in_progress';res.json({message:'Survey opened.',...survey});}
+  catch(e){console.error('Start survey error:',e);res.status(500).json({error:`Unable to open the survey. ${e.message||'Unknown server error.'}`});}
 });
-
-app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
-  try {
-    const user = await getUserById(req.session.userId);
-    const survey = await getSurveyById(req.params.surveyId, user, req);
-    if (!survey) return res.status(404).json({ error: "Survey not found." });
-    if (survey.status === 'completed') return res.status(409).json({ error: "This survey is already completed." });
-    await pool.query(
-      `UPDATE ai_survey_bundles SET status='in_progress', started_at=COALESCE(started_at,NOW()) WHERE id=$1 AND user_id=$2`,
-      [Number(String(req.params.surveyId).replace('bundle-','')), user.id]
-    );
-    res.status(201).json({message:"Survey opened.", ...survey});
-  } catch (error) {
-    console.error("Start AI survey error:", error);
-    res.status(500).json({ error: "Unable to open the survey." });
-  }
-});
-
-app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const user = await getUserById(req.session.userId);
-    const match = String(req.params.surveyId).match(/^bundle-(\d+)-q-(\d+)$/);
-    if (!match) return res.status(400).json({error:"Invalid question."});
-    const bundleId=Number(match[1]), questionId=Number(match[2]);
-    const answer=String(req.body?.answer||'').trim();
-    const q=await client.query(`SELECT q.id,q.question,q.options,q.reward,b.status,b.question_ids
-      FROM ai_questions q JOIN ai_survey_bundles b ON q.id=ANY(SELECT jsonb_array_elements_text(b.question_ids)::int)
-      WHERE q.id=$1 AND b.id=$2 AND b.user_id=$3 AND q.active=TRUE`,[questionId,bundleId,user.id]);
-    if(!q.rows.length) return res.status(404).json({error:"Question not found."});
-    const row=q.rows[0], options=Array.isArray(row.options)?row.options:JSON.parse(row.options||'[]');
-    if(!options.includes(answer)) return res.status(400).json({error:"Please select one of the available answers."});
+app.post("/api/surveys/:surveyId/submit", requireAuth, async (req,res)=>{
+  const client=await pool.connect();
+  try{
+    const user=await getUserById(req.session.userId);const id=Number(String(req.params.surveyId).replace(/^campaign-/,''));if(!Number.isInteger(id)||id<=0)return res.status(400).json({error:'Invalid survey.'});
+    const answers=req.body?.answers&&typeof req.body.answers==='object'?req.body.answers:{};
     await client.query('BEGIN');
-    const sid=`bundle-${bundleId}-q-${questionId}`;
-    const existing=await client.query(`SELECT id,status FROM survey_activity WHERE user_id=$1 AND survey_id=$2 FOR UPDATE`,[user.id,sid]);
-    if(existing.rows[0]?.status==='completed'){await client.query('ROLLBACK');return res.status(409).json({error:"This question has already been answered."});}
-    await client.query(`INSERT INTO survey_activity(user_id,survey_id,title,reward,status) VALUES($1,$2,$3,$4,'completed')
-      ON CONFLICT(user_id,survey_id) DO UPDATE SET status='completed',completed_at=NOW(),reward=EXCLUDED.reward`,
-      [user.id,sid,row.question,Number(row.reward||AI_QUESTION_REWARD)]);
-    const reward=Number(row.reward||AI_QUESTION_REWARD);
-    await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`,[reward,user.id]);
-    await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'earning',$2,$3,$4)`,
-      [user.id,reward,`Answered LilianTech survey question: ${row.question}`,sid]);
-    const count=await client.query(`SELECT COUNT(*)::int AS n FROM survey_activity WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
-      [user.id,bundleId]);
-    const total=Array.isArray(row.question_ids)?row.question_ids.length:JSON.parse(row.question_ids||'[]').length;
-    const finished=count.rows[0].n>=total;
-    if(finished) await client.query(`UPDATE ai_survey_bundles SET status='completed',completed_at=NOW() WHERE id=$1 AND user_id=$2`,[bundleId,user.id]);
-    else await client.query(`UPDATE ai_survey_bundles SET status='in_progress',started_at=COALESCE(started_at,NOW()) WHERE id=$1 AND user_id=$2`,[bundleId,user.id]);
+    const c=await client.query(`SELECT c.*,a.status AS assignment_status,a.answers AS prior_answers FROM survey_campaigns c JOIN survey_assignments a ON a.campaign_id=c.id AND a.user_id=$2::integer WHERE c.id=$1::integer FOR UPDATE`,[id,user.id]);
+    if(!c.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Survey not found.'});}
+    const row=c.rows[0];if(row.assignment_status==='completed'){await client.query('ROLLBACK');return res.status(409).json({error:'This survey has already been completed.'});}
+    if(row.status!=='active' && row.assignment_status!=='in_progress'){await client.query('ROLLBACK');return res.status(409).json({error:'This survey is no longer available.'});}
+    const ids=(Array.isArray(row.question_ids)?row.question_ids:JSON.parse(row.question_ids||'[]')).map(Number).filter(Number.isFinite);
+    const qs=await client.query(`SELECT id,question,options,reward FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`,[ids]);
+    if(qs.rows.length!==ids.length){await client.query('ROLLBACK');return res.status(409).json({error:'This survey is incomplete and cannot be submitted.'});}
+    const normalized={};let totalReward=0;
+    for(const q of qs.rows){const a=String(answers[String(q.id)]??'').trim();const opts=Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]');if(!a||!opts.includes(a)){await client.query('ROLLBACK');return res.status(400).json({error:`Please answer all ${ids.length} questions before submitting.`});}normalized[String(q.id)]=a;totalReward+=Number(q.reward||AI_QUESTION_REWARD);}
+    if(Number(row.response_count)>=Number(row.max_responses)){await client.query('ROLLBACK');return res.status(409).json({error:'This survey has just reached its response limit. Please choose another survey.'});}
+    await client.query(`UPDATE survey_assignments SET status='completed',answers=$1,completed_at=NOW() WHERE campaign_id=$2::integer AND user_id=$3::integer`,[JSON.stringify(normalized),id,Number(user.id)]);
+    const updated=await client.query(`UPDATE survey_campaigns SET response_count=response_count+1,status=CASE WHEN response_count+1>=max_responses THEN 'closed' ELSE status END WHERE id=$1::integer RETURNING response_count,max_responses,status`,[id]);
+    await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`,[totalReward,user.id]);
+    await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'earning',$2,$3,$4)`,[user.id,totalReward,`Completed ${row.title}`,`campaign-${id}`]);
     await client.query('COMMIT');
-    res.json({message:finished?"Survey completed!":"Answer recorded.",status:finished?'survey_completed':'question_completed',
-      reward,remainingQuestions:Math.max(0,total-count.rows[0].n),surveyCompleted:finished});
-  } catch(error){await client.query('ROLLBACK').catch(()=>{});console.error("Complete AI question error:",error);res.status(500).json({error:"Unable to record your answer."});}
-  finally{client.release();}
+    const u=updated.rows[0];broadcastSurveyEvent({type:'survey-updated',surveyId:`campaign-${id}`,responseCount:Number(u.response_count),maxResponses:Number(u.max_responses),closed:u.status==='closed'});
+    res.json({message:'Survey completed successfully!',status:'survey_completed',reward:totalReward,remainingQuestions:0,surveyCompleted:true});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Submit survey error:',e);res.status(500).json({error:`Unable to submit the survey. ${e.message||'Unknown server error.'}`});}finally{client.release();}
 });
-
+app.get('/api/surveys/stream', requireAuth, async (req,res)=>{res.set({'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive'});res.flushHeaders?.();res.write(`data: ${JSON.stringify({type:'connected'})}\n\n`);notificationClients.add(res);const timer=setInterval(()=>{try{res.write(': ping\\n\\n')}catch{}},25000);req.on('close',()=>{clearInterval(timer);notificationClients.delete(res);});});
+app.get('/api/notifications/config', requireAuth, (req,res)=>res.json({pushEnabled:Boolean(NOTIFICATION_PUSH_ENABLED&&webpush&&process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY),publicKey:String(process.env.VAPID_PUBLIC_KEY||'')}));
+app.post('/api/notifications/push/subscribe', requireAuth, async (req,res)=>{try{const s=req.body||{};if(!s.endpoint||!s.keys?.p256dh||!s.keys?.auth)return res.status(400).json({error:'Invalid push subscription.'});await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,updated_at) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,p256dh=EXCLUDED.p256dh,auth=EXCLUDED.auth,updated_at=NOW()`,[req.session.userId,s.endpoint,s.keys.p256dh,s.keys.auth]);res.json({message:'Push notifications enabled.'});}catch(e){console.error('Push subscribe:',e);res.status(500).json({error:'Unable to enable push notifications.'});}});
+app.post('/api/notifications/push/unsubscribe', requireAuth, async (req,res)=>{try{if(req.body?.endpoint)await pool.query(`DELETE FROM push_subscriptions WHERE user_id=$1 AND endpoint=$2`,[req.session.userId,req.body.endpoint]);res.json({message:'Push notifications disabled.'});}catch(e){res.status(500).json({error:'Unable to disable push notifications.'});}});
 
 
 (async () => {

@@ -53,3 +53,12 @@ TheoremReach configuration:
 - `THEOREMREACH_ENTRY_URL` (legacy hosted entry; no longer used by the LilianTech survey wall)
 - `THEOREMREACH_SURVEYS_API_URL` (set only to the exact native Surveys API endpoint supplied/approved by TheoremReach; may use `{api_key}`, `{user_id}`, `{ip}` tokens)
 - `THEOREMREACH_EXCHANGE_RATE` (default 100)
+
+
+## v12 survey and notification changes
+- Surveys are 10-question bundles submitted together.
+- Surveys use globally shared response limits via `SURVEY_MAX_RESPONSES` (default 100).
+- New/closed surveys are pushed to connected dashboards through SSE.
+- Email notifications use SMTP environment variables.
+- Browser push notifications use VAPID environment variables and `/sw.js`.
+- Set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` in Render for push.

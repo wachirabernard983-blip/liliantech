@@ -30,6 +30,32 @@ services:
         value: "30"
       - key: AI_QUESTION_PREFETCH
         value: "30"
+      - key: SURVEY_MAX_RESPONSES
+        value: "100"
+      - key: SURVEY_PREFETCH
+        value: "3"
+      - key: NOTIFICATION_EMAIL_ENABLED
+        value: "true"
+      - key: NOTIFICATION_PUSH_ENABLED
+        value: "true"
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: NOTIFICATION_FROM
+        sync: false
+      - key: VAPID_SUBJECT
+        value: "mailto:notifications@liliantech.online"
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
       - key: PAYPAL_ENV
         value: "sandbox"
       - key: PAYPAL_CLIENT_ID
