@@ -12,11 +12,11 @@
   <div class="container nav">
     <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
     <nav id="nav" aria-label="Main navigation">
-      <a href="#how">How it works</a><a href="#payouts">Payouts</a><a id="loginLink" href="/login.html">Log in</a><a id="startLink" class="button primary" href="/register.html">Get started</a>
+      <a href="#how">How it works</a><a href="#payouts">Payouts</a><a href="/about.html">About</a><a href="/faq.html">FAQ</a><a href="/contact.html">Contact</a><a id="loginLink" href="/login.html">Log in</a><a id="startLink" class="button primary" href="/register.html">Get started</a>
     </nav>
     <button class="mobile-menu" id="mobileMenu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
   </div>
-  <div id="mobileNav" class="mobile-nav" hidden><a href="#how">How it works</a><a href="#payouts">Payouts</a><a id="mobileLogin" href="/login.html">Log in</a><a id="mobileStart" class="button primary" href="/register.html">Get started</a></div>
+  <div id="mobileNav" class="mobile-nav" hidden><a href="#how">How it works</a><a href="#payouts">Payouts</a><a href="/about.html">About</a><a href="/faq.html">FAQ</a><a href="/contact.html">Contact</a><a id="mobileLogin" href="/login.html">Log in</a><a id="mobileStart" class="button primary" href="/register.html">Get started</a></div>
 </header>
 <main>
 <section class="hero home-hero">
@@ -54,9 +54,23 @@
   <div class="container payout-layout"><div><div class="eyebrow">PAYOUTS</div><h2>Keep your earnings within reach.</h2><p>Choose the payout option that suits you. Your available methods and processing time are shown in your account.</p></div>
   <div class="payout-pills"><span>PayPal</span><span>Wise</span><span>Payoneer</span><span>Bank transfer</span></div></div>
 </section>
+
+<section class="section home-section">
+<div class="container">
+<div class="section-heading">
+<div class="eyebrow">RESOURCES</div>
+<h2>Learn how online surveys and rewards work.</h2>
+</div>
+<div class="how-grid">
+<article class="card step"><h3><a href="/about.html">About LilianTech</a></h3><p>Learn about our mission and platform.</p></article>
+<article class="card step"><h3><a href="/faq.html">Frequently Asked Questions</a></h3><p>Answers about surveys, rewards, and payouts.</p></article>
+<article class="card step"><h3><a href="/contact.html">Contact Support</a></h3><p>Get help with your account and surveys.</p></article>
+</div>
+</div>
+</section>
 <section class="section final-cta"><div class="container"><div class="cta"><div><div class="eyebrow">READY?</div><h2>Start with your first survey.</h2><p>Create your account and see what's available for you.</p></div><a class="button light button-lg" href="/register.html">Get started <span>→</span></a></div></div></section>
 </main>
-<footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a></nav></div></footer>
+<footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/about.html">About</a><a href="/contact.html">Contact</a><a href="/faq.html">FAQ</a><a href="/cookie-policy.html">Cookie Policy</a><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a></nav></div></footer>
 <script>
 (function(){const menu=document.getElementById('mobileMenu'),mobile=document.getElementById('mobileNav');menu?.addEventListener('click',()=>{const open=menu.getAttribute('aria-expanded')==='true';menu.setAttribute('aria-expanded',String(!open));mobile.hidden=open});mobile?.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{mobile.hidden=true;menu.setAttribute('aria-expanded','false')}));
 try{const r=fetch('/api/me',{credentials:'include',cache:'no-store'}).then(x=>x.ok?x.json():null).then(d=>{if(!d?.authenticated)return;[['loginLink','Dashboard'],['startLink','Dashboard'],['mobileLogin','Dashboard'],['mobileStart','Dashboard']].forEach(([id,text])=>{const el=document.getElementById(id);if(el){el.textContent=text;el.href='/dashboard.html'}})});r.catch(()=>{});}catch(e){}
