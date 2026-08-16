@@ -892,8 +892,8 @@ async function getAllSurveyInventory(user = null, req = null) {
       remainingCount: Number(b.question_count) - Number(b.answered_count),
       status: b.status,
       startedAt: b.started_at,
-      provider: 'LilianTech AI',
-      providerId: 'liliantech-ai',
+      provider: 'AI-generated',
+      providerId: 'ai-generated',
       source: 'ai'
     }));
   } catch (error) {
@@ -933,7 +933,7 @@ async function getSurveyById(surveyId, user = null, req = null) {
 
   const answered = await pool.query(
     `SELECT survey_id FROM survey_activity
-     WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
+     WHERE user_id=$1 AND survey_id LIKE ('bundle-' || $2::text || '-q-%') AND status='completed'`,
     [user.id, Number(id)]
   );
   const answeredIds = new Set(answered.rows.map(r => String(r.survey_id).split('-q-')[1]));
@@ -1124,7 +1124,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       question_count:Number(b.question_count), answered_count:Number(b.answered_count)
     }));
     res.set("Cache-Control", "no-store");
-    const isAdmin = getAdminEmails().includes(String(user.email || '').trim().toLowerCase());
+    const isAdmin = isDesignatedAdmin(user);
     res.json({
       user: {...user, isAdmin},
       stats:{available,inProgress,completed,
@@ -1181,7 +1181,7 @@ app.post("/api/surveys/:surveyId/complete", requireAuth, async (req, res) => {
     await client.query(`UPDATE users SET balance=balance+$1 WHERE id=$2`,[reward,user.id]);
     await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'earning',$2,$3,$4)`,
       [user.id,reward,`Answered ${row.question}`,sid]);
-    const count=await client.query(`SELECT COUNT(*)::int AS n FROM survey_activity WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
+    const count=await client.query(`SELECT COUNT(*)::int AS n FROM survey_activity WHERE user_id=$1 AND survey_id LIKE ('bundle-' || $2::text || '-q-%') AND status='completed'`,
       [user.id,bundleId]);
     const total=Array.isArray(row.question_ids)?row.question_ids.length:JSON.parse(row.question_ids||'[]').length;
     const finished=count.rows[0].n>=total;
