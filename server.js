@@ -218,8 +218,11 @@ async function initializeDatabase() {
   await pool.query(`DELETE FROM provider_transactions WHERE LOWER(COALESCE(raw_payload::text,'')) LIKE '%demo%' OR LOWER(COALESCE(raw_payload::text,'')) LIKE '%test%'`);
   await pool.query(`UPDATE users u SET balance = COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.user_id=u.id), 0)`);
 
-  const { email: adminEmail, name: adminName } = getAdminIdentity();
-  await pool.query(`UPDATE users SET role = CASE WHEN LOWER(email)=$1 AND full_name=$2 THEN 'admin' ELSE 'member' END`, [adminEmail, adminName]);
+  const adminEmails = getAdminEmails();
+  await pool.query(
+    `UPDATE users SET role = CASE WHEN LOWER(email)=ANY($1::text[]) THEN 'admin' ELSE 'member' END`,
+    [adminEmails]
+  );
   console.log("Database initialized successfully.");
 }
 
@@ -504,20 +507,31 @@ function theoremReachEntryUrl(userId) {
   return Object.entries(replacements).reduce((url,[token,value])=>url.split(token).join(value),source);
 }
 
+function getAdminEmails() {
+  const configured = String(process.env.ADMIN_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  const legacy = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const defaults = [
+    'wachirabernard983@gmail.com',
+    'stellawanjiku90@gmail.com',
+    'wachirabernard193@gmail.com'
+  ];
+  return [...new Set([...(configured.length ? configured : defaults), ...(legacy ? [legacy] : [])])];
+}
+
 function getAdminIdentity() {
+  const email = String(process.env.ADMIN_EMAIL || 'wachirabernard193@gmail.com').trim().toLowerCase();
   return {
-    name: String(process.env.ADMIN_NAME || "Bernard Wachira").trim(),
-    email: String(process.env.ADMIN_EMAIL || "wachirabernard193@gmail.com").trim().toLowerCase()
+    name: String(process.env.ADMIN_NAME || 'Bernard Wachira').trim(),
+    email,
+    emails: getAdminEmails()
   };
 }
 
 function isDesignatedAdmin(user) {
-  const admin = getAdminIdentity();
   return Boolean(
     user &&
-    user.role === "admin" &&
-    user.full_name === admin.name &&
-    String(user.email || "").toLowerCase() === admin.email
+    user.role === 'admin' &&
+    getAdminEmails().includes(String(user.email || '').trim().toLowerCase())
   );
 }
 
@@ -621,12 +635,8 @@ app.post("/api/register", authRateLimit, async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const adminIdentity = getAdminIdentity();
-    if (normalizedEmail === adminIdentity.email && fullName.trim() !== adminIdentity.name) {
-      return res.status(403).json({ error: "That administrator email is reserved for the designated administrator." });
-    }
-    if (normalizedEmail === adminIdentity.email) {
-      return res.status(403).json({ error: "The designated administrator account must be provisioned separately." });
+    if (getAdminEmails().includes(normalizedEmail)) {
+      return res.status(403).json({ error: "This administrator account must be provisioned separately. Please sign in with the authorized administrator account." });
     }
 
     const existingUser = await pool.query(
@@ -876,12 +886,155 @@ async function getSurveyById(surveyId, user = null, req = null) {
   };
 }
 
+function getWithdrawalMethods() {
+  return [
+    { id: 'PayPal', label: 'PayPal', currency: 'USD', mode: 'manual', speed: 'Administrator processing', fields: [
+      { name: 'email', label: 'PayPal email', type: 'email', placeholder: 'you@example.com', required: true }
+    ]},
+    { id: 'Wise', label: 'Wise', currency: 'USD', mode: 'manual', speed: 'Administrator processing', fields: [
+      { name: 'fullName', label: 'Name on Wise account', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'email', label: 'Wise account email', type: 'email', placeholder: 'you@example.com', required: true }
+    ]},
+    { id: 'Payoneer', label: 'Payoneer', currency: 'USD', mode: 'manual', speed: 'Administrator processing', fields: [
+      { name: 'fullName', label: 'Name on Payoneer account', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'email', label: 'Payoneer account email', type: 'email', placeholder: 'you@example.com', required: true }
+    ]},
+    { id: 'Bank transfer', label: 'Bank transfer', currency: 'USD', mode: 'manual', speed: 'Administrator processing', fields: [
+      { name: 'accountName', label: 'Account holder name', type: 'text', placeholder: 'Full name', required: true },
+      { name: 'country', label: 'Bank country or region', type: 'text', placeholder: 'Country or region', required: true },
+      { name: 'bankName', label: 'Bank name', type: 'text', placeholder: 'Bank name', required: true },
+      { name: 'accountNumber', label: 'Account number / IBAN', type: 'text', placeholder: 'Account number or IBAN', required: true },
+      { name: 'swift', label: 'SWIFT / BIC', type: 'text', placeholder: 'SWIFT or BIC', required: false },
+      { name: 'currency', label: 'Payout currency', type: 'text', placeholder: 'e.g. USD, EUR, GBP', required: true }
+    ]}
+  ];
+}
+
+function parseDetails(details) { try { return JSON.parse(details); } catch { return { value: details }; } }
+
+app.get('/api/earnings', requireAuth, async (req, res) => {
+  try {
+    const user = await getUserById(req.session.userId);
+    if (!user) return res.status(401).json({error:'Account not found.'});
+    const pending = await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`, [req.session.userId]);
+    const tx = await pool.query(`SELECT id,type,amount,description,reference_id,created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`, [req.session.userId]);
+    const completed = await pool.query(`SELECT COUNT(*)::int AS count FROM ai_survey_bundles WHERE user_id=$1 AND status='completed'`, [req.session.userId]);
+    const pendingAmount = Number(pending.rows[0].amount || 0);
+    res.json({ total:Number(user.balance||0), pending:pendingAmount, available:Math.max(0,Number(user.balance||0)-pendingAmount), transactions:tx.rows, minimumWithdrawal:getMinimumWithdrawal(), completedSurveys:Number(completed.rows[0].count||0) });
+  } catch(e) { console.error('Earnings error:',e); res.status(500).json({error:'Unable to load earnings.'}); }
+});
+
+app.get('/api/withdrawal-methods', requireAuth, async (req,res) => {
+  res.set('Cache-Control','no-store');
+  res.json({methods:getWithdrawalMethods(), minimumWithdrawal:getMinimumWithdrawal(), note:'Withdrawals are queued for administrator processing.'});
+});
+
+app.get('/api/withdrawals', requireAuth, async (req,res) => {
+  try {
+    const result=await pool.query(`SELECT id,amount,method,details,status,admin_note,provider_reference,payout_error,created_at,processed_at FROM withdrawals WHERE user_id=$1 ORDER BY created_at DESC`,[req.session.userId]);
+    res.json({withdrawals:result.rows,minimumWithdrawal:getMinimumWithdrawal(),methods:getWithdrawalMethods()});
+  } catch(e) { console.error('Withdrawals error:',e); res.status(500).json({error:'Unable to load withdrawals.'}); }
+});
+
+app.post('/api/withdrawals', requireAuth, async (req,res) => {
+  const client=await pool.connect();
+  try {
+    const amount=Number(req.body.amount), method=String(req.body.method||'').trim();
+    const detailsObj=req.body.details && typeof req.body.details==='object' ? req.body.details : {};
+    const details=JSON.stringify(detailsObj), minimum=getMinimumWithdrawal();
+    const methodConfig=getWithdrawalMethods().find(m=>m.id===method);
+    if(!methodConfig) return res.status(400).json({error:'Select a supported withdrawal method.'});
+    if(!Number.isFinite(amount)||amount<minimum) return res.status(400).json({error:`Minimum withdrawal is $${minimum.toFixed(2)}.`});
+    for(const field of methodConfig.fields){ if(field.required && !String(detailsObj[field.name]||'').trim()) return res.status(400).json({error:`${field.label} is required.`}); }
+    await client.query('BEGIN');
+    const user=await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`,[req.session.userId]);
+    const pending=await client.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE user_id=$1 AND status IN ('pending','approved','processing')`,[req.session.userId]);
+    const available=Number(user.rows[0]?.balance||0)-Number(pending.rows[0]?.amount||0);
+    if(amount>available){await client.query('ROLLBACK');return res.status(400).json({error:'Insufficient available balance.'});}
+    const result=await client.query(`INSERT INTO withdrawals(user_id,amount,method,details,status) VALUES($1,$2,$3,$4,'pending') RETURNING id,amount,method,details,status,created_at`,[req.session.userId,amount.toFixed(2),method,details]);
+    await client.query('COMMIT');
+    res.status(201).json({message:'Withdrawal request submitted and queued for administrator processing.',withdrawal:result.rows[0]});
+  } catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Withdrawal submission error:',e);res.status(500).json({error:'Unable to submit withdrawal.'});}
+  finally{client.release();}
+});
+
+app.put('/api/profile', requireAuth, async (req,res) => {
+  try {
+    const fullName=String(req.body.fullName||'').trim(), phone=String(req.body.phone||'').trim(), paymentMethod=String(req.body.paymentMethod||'').trim(), paymentDetails=String(req.body.paymentDetails||'').trim();
+    if(!fullName) return res.status(400).json({error:'Full name is required.'});
+    const current=await getUserById(req.session.userId);
+    if(isDesignatedAdmin(current) && fullName !== current.full_name) return res.status(400).json({error:'Administrator name cannot be changed.'});
+    const result=await pool.query(`UPDATE users SET full_name=$1,phone=$2,payment_method=$3,payment_details=$4 WHERE id=$5 RETURNING id,full_name,email,balance,role,phone,payment_method,payment_details,created_at`,[fullName,phone||null,paymentMethod||null,paymentDetails||null,req.session.userId]);
+    res.json({message:'Profile updated.',user:result.rows[0]});
+  } catch(e){console.error('Profile error:',e);res.status(500).json({error:'Unable to update profile.'});}
+});
+
+app.get('/api/admin/revenue', requireAdmin, async (req,res) => {
+  try {
+    const rewards=await pool.query(`SELECT COALESCE(SUM(amount),0) AS rewards FROM transactions WHERE type='earning'`);
+    const pending=await pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM withdrawals WHERE status IN ('pending','approved','processing')`);
+    res.json({grossRevenue:0,memberRewards:Number(rewards.rows[0].rewards||0),platformMargin:0,providerEvents:0,pendingWithdrawalLiability:Number(pending.rows[0].amount||0),providers:[]});
+  } catch(e){console.error('Admin revenue:',e);res.status(500).json({error:'Unable to load revenue dashboard.'});}
+});
+
+app.get('/api/admin/overview', requireAdmin, async (req,res) => {
+  try {
+    const [users,pending,surveys,rewards]=await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM users`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount,COUNT(*)::int AS count FROM withdrawals WHERE status IN ('pending','approved','processing')`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM ai_survey_bundles WHERE status='completed'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS amount FROM transactions WHERE type='earning'`)
+    ]);
+    res.json({users:users.rows[0].count,pendingWithdrawals:pending.rows[0].count,pendingAmount:Number(pending.rows[0].amount||0),completedSurveys:surveys.rows[0].count,providerSurveys:[],grossRevenue:0,memberRewards:Number(rewards.rows[0].amount||0),platformMargin:0});
+  } catch(e){console.error('Admin overview:',e);res.status(500).json({error:'Unable to load admin overview.'});}
+});
+
+app.get('/api/admin/users', requireAdmin, async (req,res) => {
+  try { const r=await pool.query(`SELECT id,full_name,email,balance,role,created_at FROM users ORDER BY created_at DESC LIMIT 500`); res.json({users:r.rows}); }
+  catch(e){console.error(e);res.status(500).json({error:'Unable to load users.'});}
+});
+
+app.get('/api/admin/withdrawals', requireAdmin, async (req,res) => {
+  try { const r=await pool.query(`SELECT w.id,w.amount,w.method,w.details,w.status,w.admin_note,w.provider_reference,w.payout_error,w.created_at,w.processed_at,u.full_name,u.email FROM withdrawals w JOIN users u ON u.id=w.user_id ORDER BY w.created_at DESC LIMIT 500`); res.json({withdrawals:r.rows}); }
+  catch(e){console.error(e);res.status(500).json({error:'Unable to load withdrawals.'});}
+});
+
+app.post('/api/admin/withdrawals/:id/process', requireAdmin, async (req,res) => {
+  const client=await pool.connect();
+  try{
+    const status=String(req.body.status||'').toLowerCase(),note=String(req.body.note||'').trim();
+    if(!['approved','rejected','paid'].includes(status)) return res.status(400).json({error:'Status must be approved, rejected, or paid.'});
+    await client.query('BEGIN');
+    const wr=await client.query(`SELECT * FROM withdrawals WHERE id=$1 FOR UPDATE`,[req.params.id]);
+    if(!wr.rows[0]){await client.query('ROLLBACK');return res.status(404).json({error:'Withdrawal not found.'});}
+    const w=wr.rows[0];
+    if(['paid','rejected'].includes(w.status)){await client.query('ROLLBACK');return res.status(400).json({error:'This withdrawal is already finalized.'});}
+    if(status==='approved'&&w.status!=='pending'){await client.query('ROLLBACK');return res.status(400).json({error:'Only pending withdrawals can be approved.'});}
+    if(status==='rejected'&&!['pending','approved'].includes(w.status)){await client.query('ROLLBACK');return res.status(400).json({error:'This withdrawal cannot be rejected in its current state.'});}
+    if(status==='paid'&&!['approved','processing'].includes(w.status)){await client.query('ROLLBACK');return res.status(400).json({error:'A withdrawal must be approved before it can be marked paid.'});}
+    if(status==='paid'){
+      const user=await client.query(`SELECT balance FROM users WHERE id=$1 FOR UPDATE`,[w.user_id]);
+      if(Number(user.rows[0].balance)<Number(w.amount)){await client.query('ROLLBACK');return res.status(400).json({error:'User no longer has enough balance to pay this withdrawal.'});}
+      await client.query(`UPDATE users SET balance=balance-$1 WHERE id=$2`,[w.amount,w.user_id]);
+      await client.query(`INSERT INTO transactions(user_id,type,amount,description,reference_id) VALUES($1,'withdrawal',$2,$3,$4)`,[w.user_id,-Number(w.amount),`Withdrawal paid via ${w.method}`,String(w.id)]);
+    }
+    await client.query(`UPDATE withdrawals SET status=$1,admin_note=$2,processed_at=NOW() WHERE id=$3`,[status,note||null,w.id]);
+    await client.query('COMMIT');res.json({message:`Withdrawal marked ${status}.`});
+  }catch(e){await client.query('ROLLBACK').catch(()=>{});console.error(e);res.status(500).json({error:'Unable to process withdrawal.'});}
+  finally{client.release();}
+});
+
+app.get('/api/admin/provider-surveys', requireAdmin, async (req,res)=>res.json({surveys:[]}));
+app.post('/api/admin/provider-surveys', requireAdmin, async (req,res)=>res.status(410).json({error:'External survey providers are disabled while LilianTech uses AI-generated surveys.'}));
+app.get('/api/admin/providers', requireAdmin, async (req,res)=>res.json({providers:[]}));
+
 app.get("/api/dashboard", requireAuth, async (req, res) => {
   try {
     const user = await getUserById(req.session.userId);
     if (!user) return res.status(401).json({ error: "Account not found." });
 
-    await ensureAiSurveyBundles(user.id);
+    // Do not block dashboard loading on OpenAI question generation.
+    // The Surveys endpoint will generate/prefetch bundles separately.
     const bundles = await pool.query(
       `SELECT b.id,b.title,b.category,b.reward_total,b.status,b.started_at,b.completed_at,
               jsonb_array_length(b.question_ids) AS question_count,
