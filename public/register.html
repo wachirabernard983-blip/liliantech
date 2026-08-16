@@ -32,8 +32,53 @@
   </main>
   <footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a><a href="mailto:support@liliantech.online">Support</a></nav></div></footer>
   <script>
-    const form=document.getElementById('registerForm');const message=document.getElementById('message');
-    form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Creating your account…';const fullName=document.getElementById('fullName').value;const email=document.getElementById('email').value;const password=document.getElementById('password').value;const termsAccepted=document.getElementById('termsAccepted').checked;const privacyAccepted=termsAccepted;try{const response=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fullName,email,password,termsAccepted,privacyAccepted})});const data=await response.json();if(!response.ok){message.textContent=data.error||'Unable to create account.';return;}window.location.replace('/login.html');}catch(error){console.error(error);message.textContent='Unable to connect right now. Please try again.';}});
+    const form = document.getElementById('registerForm');
+    const message = document.getElementById('message');
+    const submitButton = form.querySelector('button[type="submit"]');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.textContent = 'Creating your account…';
+      submitButton.disabled = true;
+
+      const fullName = document.getElementById('fullName').value.trim();
+      const email = document.getElementById('email').value.trim().toLowerCase();
+      const password = document.getElementById('password').value;
+      const termsAccepted = document.getElementById('termsAccepted').checked;
+
+      try {
+        const response = await fetch('/api/register', {
+          method: 'POST',
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({
+            fullName,
+            email,
+            password,
+            termsAccepted,
+            privacyAccepted: termsAccepted
+          })
+        });
+
+        const raw = await response.text();
+        let data = {};
+        try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
+
+        if (!response.ok) {
+          message.textContent = data.error || `Unable to create account (HTTP ${response.status}).`;
+          submitButton.disabled = false;
+          return;
+        }
+
+        message.textContent = 'Account created successfully. Opening sign in…';
+        window.location.href = '/login.html?registered=1';
+      } catch (error) {
+        console.error('Registration request failed:', error);
+        message.textContent = 'Unable to connect right now. Please check your internet connection and try again.';
+        submitButton.disabled = false;
+      }
+    });
   </script>
 </body>
 </html>
