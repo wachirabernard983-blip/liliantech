@@ -133,7 +133,7 @@ async function initializeDatabase() {
       region VARCHAR(80) NOT NULL DEFAULT 'Global',
       question TEXT NOT NULL,
       options JSONB NOT NULL,
-      reward NUMERIC(14,6) NOT NULL DEFAULT 0.005000,
+      reward NUMERIC(14,6) NOT NULL DEFAULT 0.001000,
       active BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -143,7 +143,7 @@ async function initializeDatabase() {
       title VARCHAR(255) NOT NULL,
       category VARCHAR(80) NOT NULL DEFAULT 'Global Opinion',
       question_ids JSONB NOT NULL,
-      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.050000,
+      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.010000,
       status VARCHAR(20) NOT NULL DEFAULT 'available',
       started_at TIMESTAMPTZ,
       completed_at TIMESTAMPTZ,
@@ -154,7 +154,7 @@ async function initializeDatabase() {
       title VARCHAR(120) NOT NULL,
       category VARCHAR(80) NOT NULL DEFAULT 'Global Opinion',
       question_ids JSONB NOT NULL,
-      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.050000,
+      reward_total NUMERIC(14,6) NOT NULL DEFAULT 0.010000,
       max_responses INTEGER NOT NULL DEFAULT 100,
       response_count INTEGER NOT NULL DEFAULT 0,
       status VARCHAR(20) NOT NULL DEFAULT 'active',
@@ -252,8 +252,11 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS publisher_revenue NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS user_reward NUMERIC(12,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE provider_transactions ADD COLUMN IF NOT EXISTS margin NUMERIC(12,2) NOT NULL DEFAULT 0`);
-  await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS max_responses INTEGER NOT NULL DEFAULT 100`);
+  await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS max_responses INTEGER NOT NULL DEFAULT 1000`);
   await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS response_count INTEGER NOT NULL DEFAULT 0`);
+  // v15: standardize AI participation rewards to $0.001 per question / $0.010 per 10-question survey.
+  await pool.query(`UPDATE ai_questions SET reward=0.001000 WHERE reward=0.005000`);
+  await pool.query(`UPDATE survey_campaigns SET reward_total=0.010000 WHERE reward_total=0.050000`);
   await pool.query(`ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_survey_campaigns_status ON survey_campaigns(status,created_at)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_survey_assignments_user ON survey_assignments(user_id,status)`);
@@ -323,7 +326,7 @@ const authAttempts = new Map();
 const providerSurveyCache = new Map();
 let aiQuestionGenerationPromise = null;
 const AI_QUESTION_MODEL = String(process.env.OPENAI_QUESTION_MODEL || 'gpt-5.6-luna').trim();
-const AI_QUESTION_REWARD = Number(process.env.AI_QUESTION_REWARD || 0.005);
+const AI_QUESTION_REWARD = Number(process.env.AI_QUESTION_REWARD || 0.001);
 const AI_QUESTION_BATCH_SIZE = Math.max(10, Math.min(50, Number(process.env.AI_QUESTION_BATCH_SIZE || 30)));
 const AI_SURVEY_SIZE = 10;
 const AI_SURVEY_PREFETCH = Math.max(2, Math.min(10, Number(process.env.AI_SURVEY_PREFETCH || 3)));
@@ -331,6 +334,7 @@ const AI_QUESTION_PREFETCH = Math.max(5, Math.min(25, Number(process.env.AI_QUES
 const SURVEY_BATCH_SIZE = 5;
 const SURVEY_MAX_RESPONSES = Math.max(1, Math.min(1000000, Number(process.env.SURVEY_MAX_RESPONSES || 1000)));
 const SURVEY_PREFETCH = SURVEY_BATCH_SIZE;
+const SURVEY_REFRESH_MS = 30 * 60 * 1000;
 const NOTIFICATION_EMAIL_ENABLED = String(process.env.NOTIFICATION_EMAIL_ENABLED || 'true').toLowerCase() === 'true';
 const NOTIFICATION_PUSH_ENABLED = String(process.env.NOTIFICATION_PUSH_ENABLED || 'true').toLowerCase() === 'true';
 const notificationClients = new Set();
@@ -433,7 +437,7 @@ ${existingText || '(none yet)'}`;
     const result = await pool.query(
       `INSERT INTO ai_questions (question_hash, category, topic, region, question, options, reward)
        VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (question_hash) DO NOTHING RETURNING id`,
-      [hash, String(item.category || 'General').trim().slice(0,80), String(item.topic || 'General').trim().slice(0,180), String(item.region || 'Global').trim().slice(0,80), question, JSON.stringify(options), Number.isFinite(AI_QUESTION_REWARD) && AI_QUESTION_REWARD > 0 ? AI_QUESTION_REWARD : 0.005]
+      [hash, String(item.category || 'General').trim().slice(0,80), String(item.topic || 'General').trim().slice(0,180), String(item.region || 'Global').trim().slice(0,80), question, JSON.stringify(options), Number.isFinite(AI_QUESTION_REWARD) && AI_QUESTION_REWARD > 0 ? AI_QUESTION_REWARD : 0.001]
     );
     if (result.rows.length) created.push(result.rows[0].id);
   }
@@ -937,8 +941,10 @@ function getNotificationEmailTransport() {
   return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass}});
 }
 function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'notifications@liliantech.online').trim();}
-async function sendNewSurveyNotifications(campaign) {
-  const users=await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL ORDER BY id`);
+async function sendNewSurveyNotifications(campaign, targetUserId=null) {
+  const users=targetUserId
+    ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL`,[Number(targetUserId)])
+    : await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL ORDER BY id`);
   const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
   const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
   if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
@@ -956,34 +962,16 @@ async function sendNewSurveyNotifications(campaign) {
 }
 function broadcastSurveyEvent(payload){const data=`data: ${JSON.stringify(payload)}\n\n`;for(const res of notificationClients){try{res.write(data);}catch{notificationClients.delete(res);}}}
 async function ensureGlobalSurveyBatch() {
-  // Keep exactly one global batch active at a time. A batch consists of five
-  // surveys. When any survey reaches 1,000 completions it closes, but no
-  // replacement is created until all five surveys in the batch are closed.
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock($1)', [81726351]);
-    const active = await client.query(`SELECT COUNT(*)::int AS count FROM survey_campaigns WHERE status='active' AND response_count < max_responses AND (expires_at IS NULL OR expires_at > NOW())`);
-    const total = await client.query(`SELECT COUNT(*)::int AS count FROM survey_campaigns`);
-    let need = 0;
-    if (Number(total.rows[0].count) === 0 || Number(active.rows[0].count) === 0) {
-      need = SURVEY_BATCH_SIZE;
-    } else if (Number(total.rows[0].count) < SURVEY_BATCH_SIZE && Number(active.rows[0].count) < SURVEY_BATCH_SIZE) {
-      // One-time migration from older versions that created fewer than five.
-      need = SURVEY_BATCH_SIZE - Number(active.rows[0].count);
-    }
-    if (need > 0) await createSurveyCampaigns(need);
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
+  // Keep a healthy global seed of five surveys. Individual users receive a
+  // fresh batch after completing their own five-survey batch; they do not wait
+  // for 1,000 other people to finish the global inventory.
+  const active = await pool.query(`SELECT COUNT(*)::int AS count FROM survey_campaigns WHERE status='active' AND response_count < max_responses AND (expires_at IS NULL OR expires_at > NOW())`);
+  if (Number(active.rows[0].count) < SURVEY_BATCH_SIZE) {
+    await createSurveyCampaigns(SURVEY_BATCH_SIZE - Number(active.rows[0].count));
   }
 }
 
 async function getActiveCampaignsForUser(userId) {
-  await ensureGlobalSurveyBatch();
   await assignAvailableCampaigns(userId, SURVEY_PREFETCH);
   const result=await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.max_responses,c.response_count,c.status,c.created_at,a.status AS assignment_status,a.started_at,a.completed_at,
     jsonb_array_length(c.question_ids) AS question_count,
@@ -995,15 +983,31 @@ async function getActiveCampaignsForUser(userId) {
 }
 async function assignAvailableCampaigns(userId, minimum=SURVEY_BATCH_SIZE){
   const existing=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1 AND a.status IN ('available','in_progress') AND c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW())`,[Number(userId)]);
-  let need=Math.max(0,minimum-Number(existing.rows[0].count));
-  if(!need) return;
-  // Never create a replacement survey because one member has completed one.
-  // New surveys are generated only by ensureGlobalSurveyBatch after the whole
-  // five-survey global batch has closed.
-  const active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at ASC,c.id ASC LIMIT $2::integer`,[Number(userId),Number(need)]);
+  const activeCount=Number(existing.rows[0].count);
+
+  // A member receives exactly five surveys at a time. Do not replenish the
+  // batch after an individual completion. Only when the member has completed
+  // the whole five-survey batch do we create/assign a fresh five-survey batch.
+  if (activeCount > 0) return;
+
+  const completed=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments WHERE user_id=$1 AND status='completed'`,[Number(userId)]);
+  const completedCount=Number(completed.rows[0].count);
+  if (completedCount > 0 && completedCount % SURVEY_BATCH_SIZE !== 0) return;
+
+  // Initial batch uses existing global inventory. Subsequent batches get five
+  // newly generated surveys so the member does not wait for the global 1,000
+  // response cap.
+  if (completedCount > 0) {
+    await createSurveyCampaigns(SURVEY_BATCH_SIZE, userId);
+  } else {
+    await ensureGlobalSurveyBatch();
+  }
+
+  const active=await pool.query(`SELECT c.id FROM survey_campaigns c WHERE c.status='active' AND c.response_count<c.max_responses AND (c.expires_at IS NULL OR c.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM survey_assignments a WHERE a.campaign_id=c.id AND a.user_id=$1) ORDER BY c.created_at DESC,c.id DESC LIMIT $2::integer`,[Number(userId),Number(minimum)]);
   for(const r of active.rows){await pool.query(`INSERT INTO survey_assignments(campaign_id,user_id,status) VALUES($1,$2,'available') ON CONFLICT(campaign_id,user_id) DO NOTHING`,[Number(r.id),Number(userId)]);}
 }
-async function createSurveyCampaigns(count=1){
+
+async function createSurveyCampaigns(count=1, notificationUserId=null){
   const existing=await pool.query(`SELECT question_ids FROM survey_campaigns`);
   const used=new Set(); for(const r of existing.rows){const ids=Array.isArray(r.question_ids)?r.question_ids:JSON.parse(r.question_ids||'[]'); ids.forEach(x=>used.add(Number(x)));}
   const needed=count*AI_SURVEY_SIZE;
@@ -1012,7 +1016,7 @@ async function createSurveyCampaigns(count=1){
   const q=await pool.query(`SELECT id,category,reward FROM ai_questions WHERE active=TRUE ${used.size?'AND id <> ALL($1::int[])':''} ORDER BY created_at ASC,id ASC LIMIT $${used.size?2:1}`, used.size?[[...used],needed]:[needed]);
   let made=[];
   for(let i=0;i+AI_SURVEY_SIZE<=q.rows.length && made.length<count;i+=AI_SURVEY_SIZE){const chunk=q.rows.slice(i,i+AI_SURVEY_SIZE);const cats=[...new Set(chunk.map(x=>x.category))];const category=cats.length===1?cats[0]:'Global Opinion';const rewardTotal=chunk.reduce((a,x)=>a+Number(x.reward||AI_QUESTION_REWARD),0);const title=await nextGlobalSurveyName();const ins=await pool.query(`INSERT INTO survey_campaigns(title,category,question_ids,reward_total,max_responses,status) VALUES($1,$2,$3,$4,$5,'active') RETURNING id,title,category,reward_total,max_responses,response_count`,[title,category,JSON.stringify(chunk.map(x=>Number(x.id))),rewardTotal,SURVEY_MAX_RESPONSES]);made.push(ins.rows[0]);broadcastSurveyEvent({type:'new-survey',survey: {id:`campaign-${ins.rows[0].id}`,title:ins.rows[0].title}});}
-  for(const c of made){sendNewSurveyNotifications(c).catch(e=>console.warn('Notification dispatch failed:',e.message));}
+  for(const c of made){sendNewSurveyNotifications(c, notificationUserId).catch(e=>console.warn('Notification dispatch failed:',e.message));}
   return made;
 }
 async function nextGlobalSurveyName(){const used=await pool.query(`SELECT LOWER(title) title FROM survey_campaigns`);const set=new Set(used.rows.map(r=>String(r.title||'').toLowerCase()));let candidates=[];try{candidates=await generateAiProjectNames(10);}catch{};candidates=[...candidates,...FALLBACK_PROJECT_NAMES];const pick=candidates.find(x=>!set.has(String(x).toLowerCase()));return pick||`Aether-${Date.now()}`;}
