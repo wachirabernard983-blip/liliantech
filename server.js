@@ -521,14 +521,13 @@ function theoremReachEntryUrl(userId) {
 }
 
 function getAdminEmails() {
-  const configured = String(process.env.ADMIN_EMAILS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-  const legacy = String(process.env.ADMIN_EMAIL || '').trim().toLowerCase();
-  const defaults = [
+  // Hard-coded authorization list. Render environment variables cannot expand
+  // administrator access beyond these three accounts.
+  return [
     'wachirabernard983@gmail.com',
     'stellawanjiku90@gmail.com',
     'wachirabernard193@gmail.com'
   ];
-  return [...new Set([...(configured.length ? configured : defaults), ...(legacy ? [legacy] : [])])];
 }
 
 function getAdminIdentity() {
@@ -907,29 +906,54 @@ async function getSurveyById(surveyId, user = null, req = null) {
   if (!user) return null;
   const id = String(surveyId || '').replace(/^bundle-/, '');
   if (!/^\d+$/.test(id)) return null;
+
   const bundle = await pool.query(
     `SELECT id,title,category,reward_total,status,question_ids
-     FROM ai_survey_bundles WHERE id=$1 AND user_id=$2`, [Number(id), user.id]
+     FROM ai_survey_bundles WHERE id=$1 AND user_id=$2`,
+    [Number(id), user.id]
   );
   const b = bundle.rows[0];
   if (!b) return null;
-  const ids = Array.isArray(b.question_ids) ? b.question_ids : JSON.parse(b.question_ids || '[]');
+
+  const ids = Array.isArray(b.question_ids)
+    ? b.question_ids.map(Number).filter(Number.isFinite)
+    : JSON.parse(b.question_ids || '[]').map(Number).filter(Number.isFinite);
+  if (ids.length === 0) return { id:`bundle-${b.id}`, title:b.title, category:b.category, reward:Number(b.reward_total), status:b.status, questions:[] };
+
+  // Use a simple IN/ANY query with an explicitly typed integer array. This is
+  // deliberately separate from the bundle JSON so older PostgreSQL JSONB data
+  // cannot prevent a project from opening.
   const questions = await pool.query(
     `SELECT id,category,topic,region,question,options,reward
-     FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`, [ids]
+     FROM ai_questions
+     WHERE id = ANY($1::int[]) AND active=TRUE
+     ORDER BY array_position($1::int[], id)`,
+    [ids]
   );
+
   const answered = await pool.query(
     `SELECT survey_id FROM survey_activity
      WHERE user_id=$1 AND survey_id LIKE CONCAT('bundle-', $2, '-q-%') AND status='completed'`,
     [user.id, Number(id)]
   );
   const answeredIds = new Set(answered.rows.map(r => String(r.survey_id).split('-q-')[1]));
+
   return {
-    id:`bundle-${b.id}`, title:b.title, category:b.category, reward:Number(b.reward_total),
-    status:b.status, questions:questions.rows.map(q => ({
-      id:`bundle-${b.id}-q-${q.id}`, questionId:q.id, category:q.category, topic:q.topic,
-      region:q.region, question:q.question, options:Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]'),
-      reward:Number(q.reward), answered:answeredIds.has(String(q.id))
+    id:`bundle-${b.id}`,
+    title:b.title,
+    category:b.category,
+    reward:Number(b.reward_total),
+    status:b.status,
+    questions:questions.rows.map(q => ({
+      id:`bundle-${b.id}-q-${q.id}`,
+      questionId:q.id,
+      category:q.category,
+      topic:q.topic,
+      region:q.region,
+      question:q.question,
+      options:Array.isArray(q.options) ? q.options : JSON.parse(q.options || '[]'),
+      reward:Number(q.reward),
+      answered:answeredIds.has(String(q.id))
     })).filter(q=>!q.answered)
   };
 }
@@ -1119,14 +1143,16 @@ app.post("/api/surveys/:surveyId/start", requireAuth, async (req, res) => {
     const survey = await getSurveyById(req.params.surveyId, user, req);
     if (!survey) return res.status(404).json({ error: "Survey not found." });
     if (survey.status === 'completed') return res.status(409).json({ error: "This survey is already completed." });
+    const bundleId = Number(String(req.params.surveyId).replace('bundle-',''));
+    if (!Number.isInteger(bundleId) || bundleId <= 0) return res.status(400).json({ error: "Invalid project." });
     await pool.query(
       `UPDATE ai_survey_bundles SET status='in_progress', started_at=COALESCE(started_at,NOW()) WHERE id=$1 AND user_id=$2`,
-      [Number(String(req.params.surveyId).replace('bundle-','')), user.id]
+      [bundleId, user.id]
     );
-    res.status(201).json({message:"Survey opened.", ...survey});
+    res.status(200).json({message:"Project opened.", ...survey});
   } catch (error) {
     console.error("Start AI survey error:", error);
-    res.status(500).json({ error: "Unable to open the survey." });
+    res.status(500).json({ error: `Unable to open the project. ${error.message || "Unknown server error."}` });
   }
 });
 
