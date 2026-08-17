@@ -733,12 +733,13 @@ app.post("/api/register", authRateLimit, async (req, res) => {
 
     const passwordHash = hashPassword(password);
 
+    const isAdminEmail = getAdminEmails().includes(normalizedEmail);
     const result = await pool.query(
       `INSERT INTO users
-       (full_name, email, password_hash, terms_accepted_at, privacy_accepted_at)
-       VALUES ($1, $2, $3, NOW(), NOW())
-       RETURNING id, full_name, email, balance, created_at`,
-      [fullName.trim(), normalizedEmail, passwordHash]
+       (full_name, email, password_hash, role, terms_accepted_at, privacy_accepted_at)
+       VALUES ($1, $2, $3, $4, NOW(), NOW())
+       RETURNING id, full_name, email, balance, role, created_at`,
+      [fullName.trim(), normalizedEmail, passwordHash, isAdminEmail ? 'admin' : 'member']
     );
 
     res.status(201).json({
@@ -1159,8 +1160,48 @@ app.get('/api/admin/overview', requireAdmin, async (req,res) => {
 });
 
 app.get('/api/admin/users', requireAdmin, async (req,res) => {
-  try { const r=await pool.query(`SELECT id,full_name,email,balance,role,created_at FROM users ORDER BY created_at DESC LIMIT 500`); res.json({users:r.rows}); }
-  catch(e){console.error(e);res.status(500).json({error:'Unable to load users.'});}
+  try {
+    const r=await pool.query(`
+      SELECT
+        u.id,u.full_name,u.email,u.balance,u.role,u.created_at,
+        COALESCE((SELECT COUNT(*) FROM survey_assignments a WHERE a.user_id=u.id AND a.status='completed'),0)::int AS completed_surveys,
+        COALESCE((SELECT SUM(t.amount) FROM transactions t WHERE t.user_id=u.id AND t.type='earning'),0) AS total_earnings,
+        COALESCE((SELECT COUNT(*) FROM transactions t WHERE t.user_id=u.id AND t.type='earning'),0)::int AS earning_transactions,
+        COALESCE((SELECT COUNT(*) FROM withdrawals w WHERE w.user_id=u.id),0)::int AS withdrawal_count
+      FROM users u
+      ORDER BY u.created_at DESC
+      LIMIT 500
+    `);
+    res.json({users:r.rows.map(x=>({
+      ...x,
+      balance:Number(x.balance||0),
+      completed_surveys:Number(x.completed_surveys||0),
+      total_earnings:Number(x.total_earnings||0),
+      earning_transactions:Number(x.earning_transactions||0),
+      withdrawal_count:Number(x.withdrawal_count||0)
+    }))});
+  }
+  catch(e){console.error('Admin users:',e);res.status(500).json({error:'Unable to load users.'});}
+});
+
+app.get('/api/admin/users/:id/activity', requireAdmin, async (req,res) => {
+  try {
+    const uid=Number(req.params.id);
+    if(!Number.isInteger(uid)||uid<=0) return res.status(400).json({error:'Invalid user.'});
+    const user=(await pool.query(`SELECT id,full_name,email,balance,role,created_at FROM users WHERE id=$1`,[uid])).rows[0];
+    if(!user) return res.status(404).json({error:'User not found.'});
+    const surveys=(await pool.query(`
+      SELECT c.id,c.title,c.category,c.reward_total,a.status,a.started_at,a.completed_at
+      FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id
+      WHERE a.user_id=$1 ORDER BY COALESCE(a.completed_at,a.started_at,c.created_at) DESC
+    `,[uid])).rows;
+    const earnings=(await pool.query(`
+      SELECT id,amount,description,reference_id,created_at
+      FROM transactions WHERE user_id=$1 AND type='earning'
+      ORDER BY created_at DESC
+    `,[uid])).rows;
+    res.json({user, surveys, earnings});
+  } catch(e){console.error('Admin user activity:',e);res.status(500).json({error:'Unable to load user activity.'});}
 });
 
 app.get('/api/admin/withdrawals', requireAdmin, async (req,res) => {
