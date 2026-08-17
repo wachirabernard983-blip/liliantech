@@ -1,1 +1,78 @@
-<html><head><title>Cookie Policy</title></head><body><h1>Cookie Policy</h1><p>This site uses cookies for analytics, functionality, and advertising purposes.</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cookie Policy — LilianTech</title>
+<link rel="stylesheet" href="/styles.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
+</head>
+<body class="public-page">
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#how">How it works</a>
+      <a href="/#payouts">Payouts</a>
+      <a href="/login.html">Log in</a>
+      <a class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div class="mobile-nav" hidden>
+    <a href="/#how">How it works</a>
+    <a href="/#payouts">Payouts</a>
+    <a href="/login.html">Log in</a>
+    <a class="button primary" href="/register.html">Get started</a>
+  </div>
+</header>
+<main class="public-main">
+  <div class="container public-container">
+    <div class="public-heading">
+      <div class="eyebrow">LILIANTECH</div>
+      <h1>Cookie Policy</h1>
+      <p class="public-intro">How cookies and similar technologies may be used on LilianTech.</p>
+    </div>
+    <div class="public-content">
+      <section class="prose-card card">
+      <h2>What cookies are</h2><p>Cookies are small pieces of information stored by your browser. They can help websites remember settings, maintain sessions and understand how pages are used.</p>
+      <h2>How LilianTech uses them</h2><p>LilianTech may use cookies or similar technologies for essential functionality, account sessions, analytics and advertising-related features where applicable.</p>
+      <h2>Your choices</h2><p>You can manage cookies through your browser settings. Disabling some cookies may affect features that depend on saved sessions or preferences.</p>
+      <h2>Questions</h2><p>For questions about cookies or privacy, contact <a class="content-link" href="mailto:support@liliantech.online">support@liliantech.online</a>.</p>
+    </section>
+    </div>
+  </div>
+</main>
+<footer class="public-footer">
+  <div class="container footer-inner">
+    <span>© 2026 LilianTech</span>
+    <nav aria-label="Footer navigation">
+      <a href="/about.html">About</a>
+      <a href="/contact.html">Contact</a>
+      <a href="/faq.html">FAQ</a>
+      <a href="/cookie-policy.html">Cookie Policy</a>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </nav>
+  </div>
+</footer>
+<script>
+(function () {
+  const header = document.querySelector('.site-header');
+  const button = header?.querySelector('.mobile-menu');
+  const mobile = header?.querySelector('.mobile-nav');
+  if (button && mobile) {
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      mobile.hidden = open;
+    });
+    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobile.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+    }));
+  }
+})();
+</script>
+</body>
+</html>

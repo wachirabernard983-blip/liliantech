@@ -1,1 +1,80 @@
-<html><head><title>FAQ</title></head><body><h1>Frequently Asked Questions</h1><h2>How do surveys work?</h2><p>Users complete surveys and may receive rewards based on eligibility and completion.</p><h2>How are payments made?</h2><p>Payments are processed according to platform policies.</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FAQ — LilianTech</title>
+<link rel="stylesheet" href="/styles.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
+</head>
+<body class="public-page">
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#how">How it works</a>
+      <a href="/#payouts">Payouts</a>
+      <a href="/login.html">Log in</a>
+      <a class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div class="mobile-nav" hidden>
+    <a href="/#how">How it works</a>
+    <a href="/#payouts">Payouts</a>
+    <a href="/login.html">Log in</a>
+    <a class="button primary" href="/register.html">Get started</a>
+  </div>
+</header>
+<main class="public-main">
+  <div class="container public-container">
+    <div class="public-heading">
+      <div class="eyebrow">HELP CENTER</div>
+      <h1>Frequently Asked Questions</h1>
+      <p class="public-intro">Clear answers to common questions about accounts, surveys and rewards.</p>
+    </div>
+    <div class="public-content">
+      <section class="faq-list">
+      <article class="prose-card card"><h2>How do surveys work?</h2><p>Available surveys are shown in your account when they are available to you. Eligibility can vary by survey, and completing a survey successfully records the applicable reward.</p></article>
+      <article class="prose-card card"><h2>Is registration free?</h2><p>Yes. Creating a LilianTech account is free.</p></article>
+      <article class="prose-card card"><h2>When are new surveys released?</h2><p>When a member completes the currently available survey batch, the platform uses a 30-minute release cycle before making another batch available.</p></article>
+      <article class="prose-card card"><h2>Do I need to stay logged in?</h2><p>No. The survey release process is handled on the server. You can return later and check your dashboard for newly available opportunities.</p></article>
+      <article class="prose-card card"><h2>Where can I see my earnings?</h2><p>Your completed survey rewards are shown in the Earnings section of your dashboard.</p></article>
+      <article class="prose-card card"><h2>Why might a survey disappear?</h2><p>Survey availability can change when eligibility rules, capacity or completion limits are reached.</p></article>
+    </section>
+    </div>
+  </div>
+</main>
+<footer class="public-footer">
+  <div class="container footer-inner">
+    <span>© 2026 LilianTech</span>
+    <nav aria-label="Footer navigation">
+      <a href="/about.html">About</a>
+      <a href="/contact.html">Contact</a>
+      <a href="/faq.html">FAQ</a>
+      <a href="/cookie-policy.html">Cookie Policy</a>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </nav>
+  </div>
+</footer>
+<script>
+(function () {
+  const header = document.querySelector('.site-header');
+  const button = header?.querySelector('.mobile-menu');
+  const mobile = header?.querySelector('.mobile-nav');
+  if (button && mobile) {
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      mobile.hidden = open;
+    });
+    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobile.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+    }));
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,1 +1,80 @@
-<html><head><title>About Us</title></head><body><h1>About LilianTech</h1><p>LilianTech connects users with survey and earning opportunities. Our mission is to provide transparent information, fair participation rules, and a secure experience.</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About Us — LilianTech</title>
+<link rel="stylesheet" href="/styles.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
+</head>
+<body class="public-page">
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#how">How it works</a>
+      <a href="/#payouts">Payouts</a>
+      <a href="/login.html">Log in</a>
+      <a class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div class="mobile-nav" hidden>
+    <a href="/#how">How it works</a>
+    <a href="/#payouts">Payouts</a>
+    <a href="/login.html">Log in</a>
+    <a class="button primary" href="/register.html">Get started</a>
+  </div>
+</header>
+<main class="public-main">
+  <div class="container public-container">
+    <div class="public-heading">
+      <div class="eyebrow">ABOUT LILIANTECH</div>
+      <h1>About LilianTech</h1>
+      <p class="public-intro">A straightforward survey and rewards platform designed around clarity, fair participation and a human experience.</p>
+    </div>
+    <div class="public-content">
+      <section class="prose-card card">
+      <h2>What we do</h2>
+      <p>LilianTech connects members with survey and research opportunities that match their available profile information. We aim to make the experience simple: create an account, review opportunities, complete eligible surveys and track rewards in one place.</p>
+      <h2>Our approach</h2>
+      <p>We believe online earning platforms should explain how they work instead of making users guess. We keep important information easy to find, use clear language and show members the activity associated with their account.</p>
+      <h2>Built for real people</h2>
+      <p>The platform is designed to work comfortably on phones, tablets and desktop computers. We focus on readable layouts, sensible spacing and predictable navigation so that moving between pages feels consistent.</p>
+    </section>
+    </div>
+  </div>
+</main>
+<footer class="public-footer">
+  <div class="container footer-inner">
+    <span>© 2026 LilianTech</span>
+    <nav aria-label="Footer navigation">
+      <a href="/about.html">About</a>
+      <a href="/contact.html">Contact</a>
+      <a href="/faq.html">FAQ</a>
+      <a href="/cookie-policy.html">Cookie Policy</a>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </nav>
+  </div>
+</footer>
+<script>
+(function () {
+  const header = document.querySelector('.site-header');
+  const button = header?.querySelector('.mobile-menu');
+  const mobile = header?.querySelector('.mobile-nav');
+  if (button && mobile) {
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      mobile.hidden = open;
+    });
+    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobile.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+    }));
+  }
+})();
+</script>
+</body>
+</html>

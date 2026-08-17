@@ -1,1 +1,76 @@
-<html><head><title>Contact Us</title></head><body><h1>Contact Us</h1><p>Email: support@liliantech.online</p><p>For questions about surveys, payouts, or your account, contact our support team.</p></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contact Us — LilianTech</title>
+<link rel="stylesheet" href="/styles.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
+</head>
+<body class="public-page">
+<header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#how">How it works</a>
+      <a href="/#payouts">Payouts</a>
+      <a href="/login.html">Log in</a>
+      <a class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div class="mobile-nav" hidden>
+    <a href="/#how">How it works</a>
+    <a href="/#payouts">Payouts</a>
+    <a href="/login.html">Log in</a>
+    <a class="button primary" href="/register.html">Get started</a>
+  </div>
+</header>
+<main class="public-main">
+  <div class="container public-container">
+    <div class="public-heading">
+      <div class="eyebrow">SUPPORT</div>
+      <h1>Contact LilianTech</h1>
+      <p class="public-intro">Need help with your account or a survey? Send us a message and tell us what happened.</p>
+    </div>
+    <div class="public-content">
+      <section class="contact-grid">
+      <article class="prose-card card"><h2>Support email</h2><p><a class="content-link" href="mailto:support@liliantech.online">support@liliantech.online</a></p><p>For faster assistance, include the email address on your LilianTech account and a short description of the issue.</p></article>
+      <article class="prose-card card"><h2>What to include</h2><p>Tell us the page you were using, what you expected to happen, what happened instead and any relevant survey or transaction reference.</p></article>
+    </section>
+    </div>
+  </div>
+</main>
+<footer class="public-footer">
+  <div class="container footer-inner">
+    <span>© 2026 LilianTech</span>
+    <nav aria-label="Footer navigation">
+      <a href="/about.html">About</a>
+      <a href="/contact.html">Contact</a>
+      <a href="/faq.html">FAQ</a>
+      <a href="/cookie-policy.html">Cookie Policy</a>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </nav>
+  </div>
+</footer>
+<script>
+(function () {
+  const header = document.querySelector('.site-header');
+  const button = header?.querySelector('.mobile-menu');
+  const mobile = header?.querySelector('.mobile-nav');
+  if (button && mobile) {
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      mobile.hidden = open;
+    });
+    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobile.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+    }));
+  }
+})();
+</script>
+</body>
+</html>

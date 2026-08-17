@@ -9,12 +9,24 @@
      crossorigin="anonymous"></script>
 </head>
 <body class="auth-page">
-  <header class="site-header auth-header">
-    <div class="container nav">
-      <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
-      <a class="button secondary" href="/register.html">Create account</a>
-    </div>
-  </header>
+  <header class="site-header">
+  <div class="container nav">
+    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+    <nav class="desktop-nav" aria-label="Main navigation">
+      <a href="/#how">How it works</a>
+      <a href="/#payouts">Payouts</a>
+      <a href="/login.html">Log in</a>
+      <a class="button primary" href="/register.html">Get started</a>
+    </nav>
+    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
+  </div>
+  <div class="mobile-nav" hidden>
+    <a href="/#how">How it works</a>
+    <a href="/#payouts">Payouts</a>
+    <a href="/login.html">Log in</a>
+    <a class="button primary" href="/register.html">Get started</a>
+  </div>
+</header>
   <main class="auth-main">
     <div class="container auth-container">
       <section class="auth-card card">
@@ -31,8 +43,38 @@
       </section>
     </div>
   </main>
-  <footer><div class="container footer-inner"><span>© 2026 LilianTech</span><nav><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a><a href="mailto:support@liliantech.online">Support</a></nav></div></footer>
+  <footer class="public-footer">
+  <div class="container footer-inner">
+    <span>© 2026 LilianTech</span>
+    <nav aria-label="Footer navigation">
+      <a href="/about.html">About</a>
+      <a href="/contact.html">Contact</a>
+      <a href="/faq.html">FAQ</a>
+      <a href="/cookie-policy.html">Cookie Policy</a>
+      <a href="/privacy.html">Privacy Policy</a>
+      <a href="/terms.html">Terms of Service</a>
+    </nav>
+  </div>
+</footer>
   <script>
+(function () {
+  const header = document.querySelector('.site-header');
+  const button = header?.querySelector('.mobile-menu');
+  const mobile = header?.querySelector('.mobile-nav');
+  if (button && mobile) {
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      mobile.hidden = open;
+    });
+    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+      mobile.hidden = true;
+      button.setAttribute('aria-expanded', 'false');
+    }));
+  }
+})();
+</script>
+<script>
     const form = document.getElementById('loginForm');
     const message = document.getElementById('message');
     const submitButton = form.querySelector('button[type="submit"]');
