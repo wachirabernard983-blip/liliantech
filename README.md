@@ -3,7 +3,7 @@
 LilianTech is a global survey-rewards platform. Approved research partners supply earning opportunities; LilianTech credits members only from verified provider callbacks and tracks the provider's gross revenue separately from the member reward.
 
 ## Version
-7.0.0
+7.3.0
 
 ## Production configuration
 

@@ -5,8 +5,8 @@ NOTIFICATION_FROM=LilianTech <support@liliantech.online>
 NOTIFICATION_EMAIL_ENABLED=true
 
 NOTIFICATION_PUSH_ENABLED=true
-VAPID_PUBLIC_KEY=<YOUR_VAPID_PUBLIC_KEY>
-VAPID_PRIVATE_KEY=<YOUR_VAPID_PRIVATE_KEY>
+VAPID_PUBLIC_KEY=<OPTIONAL_IF_USING_ENV_VAPID_KEYS>
+VAPID_PRIVATE_KEY=<OPTIONAL_IF_USING_ENV_VAPID_KEYS>
 VAPID_SUBJECT=mailto:notifications@liliantech.online
 
 APP_BASE_URL=https://liliantech.online
@@ -16,3 +16,5 @@ IMPORTANT:
 - Add them only to Render Environment Variables.
 - Keep the same VAPID key pair permanently for existing browser subscriptions.
 - Resend HTTP API is recommended for Render. Create/verify the liliantech.online sender domain in Resend, then add the API key to Render as RESEND_API_KEY. The server uses HTTPS instead of an SMTP socket, avoiding SMTP port connection timeouts.
+
+If VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY are omitted, LilianTech generates and persists a VAPID key pair in PostgreSQL so browser push subscriptions survive Render restarts.

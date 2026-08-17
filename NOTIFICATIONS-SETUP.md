@@ -37,7 +37,9 @@ When a new survey batch is released for a user:
 - Web Push is sent to registered browser/PWA subscriptions.
 - Clicking the push notification opens the Surveys area.
 
-Push permission is requested only after the member explicitly clicks **Enable push notifications**, which follows modern browser privacy/permission practices.
+Push permission is requested only after the member explicitly clicks **Enable push notifications**, which follows modern browser privacy/permission practices. After the one-time permission is granted, survey notifications are automatic. Email notifications are automatic by default.
+
+LilianTech uses the Resend HTTPS API for email when `RESEND_API_KEY` is configured. Browser push uses a persistent VAPID key pair; if VAPID environment variables are omitted, the server generates and stores the key pair in PostgreSQL.
 
 ## Native Android app
 

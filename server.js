@@ -212,6 +212,11 @@ async function initializeDatabase() {
       detail TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key VARCHAR(100) PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     ALTER TABLE users ADD COLUMN IF NOT EXISTS next_survey_batch_at TIMESTAMPTZ;
     ALTER TABLE survey_campaigns ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
     CREATE INDEX IF NOT EXISTS idx_survey_campaigns_owner ON survey_campaigns(owner_user_id);
@@ -1285,22 +1290,66 @@ function getNotificationEmailTransport() {
   return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass}});
 }
 function notificationFrom(){return String(process.env.NOTIFICATION_FROM||'LilianTech <support@liliantech.online>').trim();}
+async function sendNotificationEmail(email,subject,text,html){
+  const resendKey=String(process.env.RESEND_API_KEY||'').trim();
+  if(resendKey){
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),15000);
+    try{
+      const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:`Bearer ${resendKey}`,'Content-Type':'application/json'},body:JSON.stringify({from:notificationFrom(),to:[email],subject,text,html}),signal:controller.signal});
+      const body=await response.text();
+      if(!response.ok) throw new Error(`Resend email delivery failed (${response.status}): ${body.slice(0,300)}`);
+      return;
+    }catch(e){
+      if(e?.name==='AbortError') throw new Error('Email provider timed out after 15 seconds.');
+      throw e;
+    }finally{clearTimeout(timer);}
+  }
+  const mailer=getNotificationEmailTransport();
+  if(!mailer) throw new Error('Email delivery is not configured.');
+  await mailer.sendMail({from:notificationFrom(),to:email,subject,text,html});
+}
+function decodeVapidPublicKey(value){
+  const raw=String(value||'').trim();
+  if(!raw||/[<>\s]/.test(raw)) return null;
+  try{
+    const padded=raw.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-raw.length%4)%4);
+    const buf=Buffer.from(padded,'base64');
+    if(buf.length!==65||buf[0]!==4) return null;
+    return raw;
+  }catch{return null;}
+}
+async function getVapidConfig(){
+  const envPublic=decodeVapidPublicKey(process.env.VAPID_PUBLIC_KEY);
+  const envPrivate=String(process.env.VAPID_PRIVATE_KEY||'').trim();
+  const envSubject=String(process.env.VAPID_SUBJECT||'mailto:support@liliantech.online').trim();
+  if(envPublic && envPrivate) return {publicKey:envPublic,privateKey:envPrivate,subject:envSubject};
+  if(!webpush) return {publicKey:'',privateKey:'',subject:envSubject};
+  const existing=await pool.query(`SELECT key,value FROM app_settings WHERE key IN ('vapid_public_key','vapid_private_key') ORDER BY key`);
+  const stored=Object.fromEntries(existing.rows.map(r=>[r.key,r.value]));
+  const storedPublic=decodeVapidPublicKey(stored.vapid_public_key);
+  if(storedPublic && stored.vapid_private_key) return {publicKey:storedPublic,privateKey:stored.vapid_private_key,subject:envSubject};
+  const generated=webpush.generateVAPIDKeys();
+  await pool.query(`INSERT INTO app_settings(key,value,updated_at) VALUES('vapid_public_key',$1,NOW()),('vapid_private_key',$2,NOW()) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()`,[generated.publicKey,generated.privateKey]);
+  console.log('Generated and persisted LilianTech VAPID keys for browser push notifications.');
+  return {publicKey:generated.publicKey,privateKey:generated.privateKey,subject:envSubject};
+}
 async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const users=targetUserId
     ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE`,[Number(targetUserId)])
     : await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE ORDER BY id`);
-  const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
-  const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
-  if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
-    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:notifications@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
+  let vapid=null;
+  if(NOTIFICATION_PUSH_ENABLED && webpush){
+    try{vapid=await getVapidConfig();webpush.setVapidDetails(vapid.subject,vapid.publicKey,vapid.privateKey);}catch(e){console.warn('Push VAPID setup failed:',e.message);}
   }
   for(const u of users.rows){
     const subject=`New survey available: ${campaign.title}`;
     const text=`A new 10-question survey, ${campaign.title}, is now available on LilianTech. Reward: $${Number(campaign.reward_total).toFixed(3)}. Sign in to answer all 10 questions.`;
-    if(emailer){try{await emailer.sendMail({from:notificationFrom(),to:u.email,subject,text,html:`<p>Hello ${String(u.full_name||'')},</p><p>A new 10-question survey, <strong>${campaign.title}</strong>, is now available on LilianTech.</p><p>Reward: <strong>$${Number(campaign.reward_total).toFixed(3)}</strong></p><p>Sign in to answer all 10 questions.</p><p><a href="https://liliantech.online/dashboard.html#surveys">Open LilianTech</a></p>`});await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'email','sent')`,[campaign.id,u.id]);}catch(e){await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status,detail) VALUES($1,$2,'email','failed',$3)`,[campaign.id,u.id,String(e.message).slice(0,500)]);}}
-    if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
+    if(NOTIFICATION_EMAIL_ENABLED){
+      try{await sendNotificationEmail(u.email,subject,text,`<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#111827"><h2>New survey available on LilianTech</h2><p>Hello ${String(u.full_name||'')},</p><p>A new 10-question survey, <strong>${campaign.title}</strong>, is now available.</p><p>Reward: <strong>$${Number(campaign.reward_total).toFixed(3)}</strong></p><p><a href="https://liliantech.online/dashboard.html#surveys">Open LilianTech</a></p><p style="color:#667085">You are receiving this because survey email notifications are enabled on your account.</p></div>`);await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'email','sent')`,[campaign.id,u.id]);}catch(e){await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status,detail) VALUES($1,$2,'email','failed',$3)`,[campaign.id,u.id,String(e.message).slice(0,500)]);}}
+    if(NOTIFICATION_PUSH_ENABLED && vapid?.publicKey && vapid?.privateKey){
       const subs=await pool.query(`SELECT id,endpoint,p256dh,auth FROM push_subscriptions WHERE user_id=$1`,[u.id]);
-      for(const sub of subs.rows){try{await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},JSON.stringify({title:`New survey: ${campaign.title}`,body:`10 questions • Reward $${Number(campaign.reward_total).toFixed(3)}`,url:'/dashboard.html#surveys'}));await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'push','sent')`,[campaign.id,u.id]);}catch(e){if(e.statusCode===404||e.statusCode===410) await pool.query(`DELETE FROM push_subscriptions WHERE id=$1`,[sub.id]);}}
+      for(const sub of subs.rows){try{await webpush.sendNotification({endpoint:sub.endpoint,keys:{p256dh:sub.p256dh,auth:sub.auth}},JSON.stringify({title:`New survey: ${campaign.title}`,body:`10 questions • Reward $${Number(campaign.reward_total).toFixed(3)}`,url:'/dashboard.html#surveys'}));await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status) VALUES($1,$2,'push','sent')`,[campaign.id,u.id]);}catch(e){if(e.statusCode===404||e.statusCode===410) await pool.query(`DELETE FROM push_subscriptions WHERE id=$1`,[sub.id]);else await pool.query(`INSERT INTO notification_log(campaign_id,user_id,channel,status,detail) VALUES($1,$2,'push','failed',$3)`,[campaign.id,u.id,String(e.message).slice(0,500)]);}}
     }
   }
 }
@@ -1722,14 +1771,15 @@ app.post("/api/surveys/:surveyId/submit", requireAuth, async (req,res)=>{
   }catch(e){await client.query('ROLLBACK').catch(()=>{});console.error('Submit survey error:',e);res.status(500).json({error:`Unable to submit the survey. ${e.message||'Unknown server error.'}`});}finally{client.release();}
 });
 app.get('/api/surveys/stream', requireAuth, async (req,res)=>{res.set({'Content-Type':'text/event-stream','Cache-Control':'no-cache, no-transform','Connection':'keep-alive'});res.flushHeaders?.();res.write(`data: ${JSON.stringify({type:'connected'})}\n\n`);notificationClients.add(res);const timer=setInterval(()=>{try{res.write(': ping\\n\\n')}catch{}},25000);req.on('close',()=>{clearInterval(timer);notificationClients.delete(res);});});
-app.get('/api/notifications/config', requireAuth, (req,res)=>res.json({pushEnabled:Boolean(NOTIFICATION_PUSH_ENABLED&&webpush&&process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY),publicKey:String(process.env.VAPID_PUBLIC_KEY||'')}));
+app.get('/api/notifications/config', requireAuth, async (req,res)=>{try{const vapid=NOTIFICATION_PUSH_ENABLED&&webpush?await getVapidConfig():null;res.json({pushEnabled:Boolean(NOTIFICATION_PUSH_ENABLED&&vapid?.publicKey&&vapid?.privateKey),publicKey:vapid?.publicKey||''});}catch(e){console.error('Notification config:',e);res.status(500).json({error:'Unable to load push notification configuration.'});}});
 app.post('/api/notifications/push/subscribe', requireAuth, async (req,res)=>{try{const s=req.body||{};if(!s.endpoint||!s.keys?.p256dh||!s.keys?.auth)return res.status(400).json({error:'Invalid push subscription.'});await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,updated_at) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,p256dh=EXCLUDED.p256dh,auth=EXCLUDED.auth,updated_at=NOW()`,[req.session.userId,s.endpoint,s.keys.p256dh,s.keys.auth]);res.json({message:'Push notifications enabled.'});}catch(e){console.error('Push subscribe:',e);res.status(500).json({error:'Unable to enable push notifications.'});}});
 app.post('/api/notifications/push/unsubscribe', requireAuth, async (req,res)=>{try{if(req.body?.endpoint)await pool.query(`DELETE FROM push_subscriptions WHERE user_id=$1 AND endpoint=$2`,[req.session.userId,req.body.endpoint]);res.json({message:'Push notifications disabled.'});}catch(e){res.status(500).json({error:'Unable to disable push notifications.'});}});
 app.get('/api/notifications/preferences', requireAuth, async (req,res)=>{
   try{
     const r=await pool.query(`SELECT email_notifications_enabled,email_verified_at FROM users WHERE id=$1`,[req.session.userId]);
     if(!r.rows.length)return res.status(404).json({error:"Account not found."});
-    res.json({emailEnabled:Boolean(r.rows[0].email_notifications_enabled),emailVerified:Boolean(r.rows[0].email_verified_at),pushSupported:Boolean(webpush && process.env.VAPID_PUBLIC_KEY)});
+    const vapid=NOTIFICATION_PUSH_ENABLED&&webpush?await getVapidConfig():null;
+    res.json({emailEnabled:Boolean(r.rows[0].email_notifications_enabled),emailVerified:Boolean(r.rows[0].email_verified_at),pushSupported:Boolean(vapid?.publicKey),pushEnabled:Boolean(NOTIFICATION_PUSH_ENABLED&&vapid?.publicKey)});
   }catch(e){res.status(500).json({error:"Unable to load notification preferences."});}
 });
 app.put('/api/notifications/preferences', requireAuth, async (req,res)=>{

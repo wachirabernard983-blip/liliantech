@@ -1,6 +1,6 @@
 {
   "name": "liliantech",
-  "version": "7.1.0",
+  "version": "7.3.0",
   "private": true,
   "scripts": {
     "start": "node server.js"

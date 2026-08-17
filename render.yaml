@@ -34,6 +34,8 @@ services:
         value: "1000"
       - key: SURVEY_PREFETCH
         value: "5"
+      - key: RESEND_API_KEY
+        sync: false
       - key: NOTIFICATION_EMAIL_ENABLED
         value: "true"
       - key: NOTIFICATION_PUSH_ENABLED
