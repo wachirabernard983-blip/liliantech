@@ -735,22 +735,45 @@ function generateVerificationCode(){
 }
 
 async function sendVerificationCodeEmail(email, code, isResend=false){
-  const mailer=getNotificationEmailTransport();
-  if(!mailer) throw new Error("Email delivery is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER and SMTP_PASS in Render.");
-  await mailer.sendMail({
-    from:notificationFrom(),
-    to:email,
-    subject:isResend ? "Your LilianTech verification code" : "Your LilianTech verification code",
-    text:`Your LilianTech verification code is ${code}. It expires in 10 minutes. If you did not request this, you can ignore this email.`,
-    html:`<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
+  const subject = isResend ? "Your LilianTech verification code" : "Your LilianTech verification code";
+  const text = `Your LilianTech verification code is ${code}. It expires in 10 minutes. If you did not request this, you can ignore this email.`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
       <h2 style="margin:0 0 16px">Verify your LilianTech email</h2>
       <p>Use this code to continue creating your LilianTech account:</p>
       <div style="font-size:34px;letter-spacing:9px;font-weight:700;margin:26px 0">${code}</div>
       <p>This code expires in <strong>10 minutes</strong>.</p>
       <p>After your email is verified, you will be asked to create your password.</p>
       <p>If you did not request this, you can ignore this email.</p>
-    </div>`
-  });
+    </div>`;
+
+  // Prefer Resend's HTTPS API in production. This avoids SMTP socket/port
+  // timeouts on hosted platforms such as Render. SMTP remains available as
+  // a fallback for deployments that do not have RESEND_API_KEY configured.
+  const resendKey = String(process.env.RESEND_API_KEY || '').trim();
+  if(resendKey){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method:'POST',
+        headers:{'Authorization':`Bearer ${resendKey}`,'Content-Type':'application/json'},
+        body:JSON.stringify({from:notificationFrom(),to:[email],subject,text,html}),
+        signal:controller.signal
+      });
+      const body = await response.text();
+      if(!response.ok) throw new Error(`Resend email delivery failed (${response.status}): ${body.slice(0,300)}`);
+      return;
+    } catch(err){
+      if(err?.name === 'AbortError') throw new Error('Email provider timed out after 15 seconds. Check RESEND_API_KEY and your sender domain in Render.');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const mailer=getNotificationEmailTransport();
+  if(!mailer) throw new Error('Email delivery is not configured. Add RESEND_API_KEY in Render (recommended), or configure SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER and SMTP_PASS.');
+  await mailer.sendMail({from:notificationFrom(),to:email,subject,text,html});
 }
 
 async function issuePendingVerification(email, isResend=false){
@@ -1167,9 +1190,9 @@ function getNotificationEmailTransport() {
   const user=String(process.env.SMTP_USER||'').trim();
   const pass=String(process.env.SMTP_PASS||'').trim();
   if(!host||!user||!pass) return null;
-  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass},connectionTimeout:10000,greetingTimeout:10000,socketTimeout:15000});
+  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass}});
 }
-function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'support@liliantech.online').trim();}
+function notificationFrom(){return String(process.env.NOTIFICATION_FROM||'LilianTech <support@liliantech.online>').trim();}
 async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const users=targetUserId
     ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE`,[Number(targetUserId)])
@@ -1177,7 +1200,7 @@ async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
   const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
   if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
-    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:support@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
+    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:notifications@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
   }
   for(const u of users.rows){
     const subject=`New survey available: ${campaign.title}`;

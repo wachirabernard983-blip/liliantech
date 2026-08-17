@@ -8,14 +8,14 @@ SMTP:
 - `SMTP_SECURE` (`false` for STARTTLS/587; `true` for SSL/465)
 - `SMTP_USER`
 - `SMTP_PASS`
-- `NOTIFICATION_FROM` (for example `support@liliantech.online`)
+- `NOTIFICATION_FROM` (for example `notifications@liliantech.online`)
 - `NOTIFICATION_EMAIL_ENABLED=true`
 
 Web Push:
 - `NOTIFICATION_PUSH_ENABLED=true`
 - `VAPID_PUBLIC_KEY`
 - `VAPID_PRIVATE_KEY`
-- `VAPID_SUBJECT` (for example `mailto:support@liliantech.online`)
+- `VAPID_SUBJECT` (for example `mailto:notifications@liliantech.online`)
 
 Generate VAPID keys once with:
 `npx web-push generate-vapid-keys`

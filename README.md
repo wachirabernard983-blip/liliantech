@@ -6,6 +6,9 @@ LilianTech is a global survey-rewards platform. Approved research partners suppl
 7.0.0
 
 ## Production configuration
+
+Email verification uses the Resend HTTPS API when `RESEND_API_KEY` is present. `NOTIFICATION_FROM` should use a sender address verified in Resend (recommended: `LilianTech <support@liliantech.online>`). SMTP remains a fallback.
+
 Required:
 - `DATABASE_URL`
 - `SESSION_SECRET`
