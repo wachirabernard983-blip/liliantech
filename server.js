@@ -393,7 +393,7 @@ ${existingText || '(none yet)'}`;
       model: AI_QUESTION_MODEL,
       messages: [
         { role: 'system', content: 'You create concise, neutral, globally relevant multiple-choice opinion questions. Output only the requested JSON.' },
-        { role: 'user', content: prompt }
+        { role: getAdminEmails().includes(normalizedEmail) ? 'admin' : 'user', content: prompt }
       ],
       response_format: {
         type: 'json_schema',
@@ -719,9 +719,6 @@ app.post("/api/register", authRateLimit, async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    if (getAdminEmails().includes(normalizedEmail)) {
-      return res.status(403).json({ error: "This administrator account must be provisioned separately. Please sign in with the authorized administrator account." });
-    }
 
     const existingUser = await pool.query(
       "SELECT id FROM users WHERE email = $1",

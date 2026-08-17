@@ -1,0 +1,11 @@
+LilianTech Admin Signup - Option 1
+
+The registration restriction for the designated admin emails was removed.
+These emails are automatically assigned the admin role when they register:
+
+- wachirabernard983@gmail.com
+- stellawanjiku90@gmail.com
+- wachirabernard193@gmail.com
+
+All other registrations remain normal user accounts.
+Deploy this ZIP to GitHub/Render and register each designated admin account through the normal signup page.
