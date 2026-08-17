@@ -1,130 +1,69 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#6d5dfc">
-  <title>Create account — LilianTech</title>
-  <link rel="stylesheet" href="/styles.css">
-<link rel="manifest" href="/manifest.webmanifest">
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301"
-     crossorigin="anonymous"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get Started — LilianTech</title>
+<link rel="stylesheet" href="/styles.css">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
 </head>
-<body class="auth-page">
-  <header class="site-header">
+<body class="public-page">
+<header class="site-header">
   <div class="container nav">
     <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
     <nav class="desktop-nav" aria-label="Main navigation">
-      <a href="/#how">How it works</a>
-      <a href="/#payouts">Payouts</a>
-      <a href="/login.html">Log in</a>
-      <a class="button primary" href="/register.html">Get started</a>
+      <a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a>
     </nav>
     <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
   </div>
-  <div class="mobile-nav" hidden>
-    <a href="/#how">How it works</a>
-    <a href="/#payouts">Payouts</a>
-    <a href="/login.html">Log in</a>
-    <a class="button primary" href="/register.html">Get started</a>
-  </div>
+  <div class="mobile-nav" hidden><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></div>
 </header>
-  <main class="auth-main">
-    <div class="container auth-container">
-      <section class="auth-card card">
-        <div class="eyebrow">GET STARTED</div>
-        <h1>Create your LilianTech account.</h1>
-        <p class="muted">Join free and see the opportunities available to you.</p>
-        <form id="registerForm" class="auth-form">
-          <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Your full name" autocomplete="name" required></div>
-          <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
-          <div><label for="password">Password</label><input id="password" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required></div>
-          <label class="consent-row"><input id="termsAccepted" type="checkbox" required> <span>I agree to the <a href="/terms.html" target="_blank" rel="noopener">Terms of Service</a> and <a href="/privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.</span></label><button class="button primary" type="submit">Create account</button>
-        </form>
-        <p id="message" class="form-message muted" aria-live="polite"></p>
-        <p class="auth-switch muted">Already registered? <a href="/login.html">Sign in</a></p>
-      </section>
+
+<main class="public-main">
+  <div class="container public-container">
+    <div class="auth-card card">
+      <div class="eyebrow">GET STARTED</div>
+      <h1>Create your LilianTech account.</h1>
+      <p class="public-intro">Enter your name and email first. We'll send you a verification code before you create your password.</p>
+
+      <form id="registerForm" class="auth-form">
+        <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Betty Katelin" autocomplete="name" required></div>
+        <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="bettykatelin@gmail.com" autocomplete="email" required></div>
+        <label class="check"><input id="terms" type="checkbox" required><span>I agree to the <a href="/terms.html">Terms of Service</a> and <a href="/privacy.html">Privacy Policy</a>.</span></label>
+        <button class="button primary button-lg" type="submit">Send verification code</button>
+        <p id="message" class="form-message" aria-live="polite"></p>
+      </form>
+
+      <p class="auth-switch muted">Already registered? <a href="/login.html">Sign in</a></p>
     </div>
-  </main>
-  <footer class="public-footer">
-  <div class="container footer-inner">
-    <span>© 2026 LilianTech</span>
-    <nav aria-label="Footer navigation">
-      <a href="/about.html">About</a>
-      <a href="/contact.html">Contact</a>
-      <a href="/faq.html">FAQ</a>
-      <a href="/cookie-policy.html">Cookie Policy</a>
-      <a href="/privacy.html">Privacy Policy</a>
-      <a href="/terms.html">Terms of Service</a>
-    </nav>
   </div>
-</footer>
-  <script>
-(function () {
-  const header = document.querySelector('.site-header');
-  const button = header?.querySelector('.mobile-menu');
-  const mobile = header?.querySelector('.mobile-nav');
-  if (button && mobile) {
-    button.addEventListener('click', () => {
-      const open = button.getAttribute('aria-expanded') === 'true';
-      button.setAttribute('aria-expanded', String(!open));
-      mobile.hidden = open;
-    });
-    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
-      mobile.hidden = true;
-      button.setAttribute('aria-expanded', 'false');
-    }));
-  }
-})();
-</script>
+</main>
+
+<footer class="public-footer"><div class="container footer-inner"><span>© 2026 LilianTech</span><nav aria-label="Footer navigation"><a href="/about.html">About</a><a href="/contact.html">Contact</a><a href="/faq.html">FAQ</a><a href="/cookie-policy.html">Cookie Policy</a><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a></nav></div></footer>
+
 <script>
-    const form = document.getElementById('registerForm');
-    const message = document.getElementById('message');
-    const submitButton = form.querySelector('button[type="submit"]');
-
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      message.textContent = 'Creating your account…';
-      submitButton.disabled = true;
-
-      const fullName = document.getElementById('fullName').value.trim();
-      const email = document.getElementById('email').value.trim().toLowerCase();
-      const password = document.getElementById('password').value;
-      const termsAccepted = document.getElementById('termsAccepted').checked;
-
-      try {
-        const response = await fetch('/api/register', {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({
-            fullName,
-            email,
-            password,
-            termsAccepted,
-            privacyAccepted: termsAccepted
-          })
-        });
-
-        const raw = await response.text();
-        let data = {};
-        try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
-
-        if (!response.ok) {
-          message.textContent = data.error || `Unable to create account (HTTP ${response.status}).`;
-          submitButton.disabled = false;
-          return;
-        }
-
-        message.textContent = 'Account created. Check your email for the verification code…';
-        window.location.href = '/verify-email.html?email=' + encodeURIComponent(data.email || email);
-      } catch (error) {
-        console.error('Registration request failed:', error);
-        message.textContent = 'Unable to connect right now. Please check your internet connection and try again.';
-        submitButton.disabled = false;
-      }
-    });
-  </script>
+(function(){
+ const header=document.querySelector('.site-header'), btn=header?.querySelector('.mobile-menu'), mobile=header?.querySelector('.mobile-nav');
+ if(btn&&mobile){btn.addEventListener('click',()=>{const open=btn.getAttribute('aria-expanded')==='true';btn.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});}
+})();
+const form=document.getElementById('registerForm');
+const message=document.getElementById('message');
+form.addEventListener('submit',async(e)=>{
+ e.preventDefault();
+ message.textContent='Sending your verification code…';
+ const button=form.querySelector('button'); button.disabled=true;
+ try{
+   const r=await fetch('/api/register/start',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+     fullName:document.getElementById('fullName').value.trim(),
+     email:document.getElementById('email').value.trim(),
+     termsAccepted:document.getElementById('terms').checked,
+     privacyAccepted:document.getElementById('terms').checked
+   })});
+   const data=await r.json().catch(()=>({}));
+   if(!r.ok) throw new Error(data.error||'Unable to send the verification code.');
+   window.location.href='/verify-email.html?email='+encodeURIComponent(data.email);
+ }catch(err){message.textContent=err.message;button.disabled=false;}
+});
+</script>
 </body>
 </html>
