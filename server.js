@@ -86,7 +86,7 @@ app.get("/admin.html", async (req, res) => {
     const user = result.rows[0];
     // Admin page access is based ONLY on the three explicitly authorized emails.
     // The database role is not trusted for this page gate.
-    if (!user || !getAdminEmails().includes(String(user.email || '').trim().toLowerCase())) {
+    if (!isDesignatedAdmin(user)) {
       return res.status(403).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access denied — LilianTech</title><link rel="stylesheet" href="/styles.css"></head><body><main class="section"><div class="container card feature" style="max-width:560px"><div class="brand">Lilian<span>Tech</span></div><h1>Access denied</h1><p class="muted">The administration area is restricted to authorized administrators.</p><a class="button primary" href="/dashboard.html">Back to dashboard</a></div></main></body></html>`);
     }
     return res.sendFile(path.join(__dirname, "public", "admin.html"));
@@ -610,9 +610,11 @@ function getAdminIdentity() {
 }
 
 function isDesignatedAdmin(user) {
+  // Administrator authorization is tied to the three hard-coded emails.
+  // This intentionally does not depend on a stale database role value, so
+  // accounts created before the admin-role update still receive admin access.
   return Boolean(
     user &&
-    user.role === 'admin' &&
     getAdminEmails().includes(String(user.email || '').trim().toLowerCase())
   );
 }
@@ -636,7 +638,11 @@ async function getUserById(id) {
     [id]
   );
 
-  return result.rows[0] || null;
+  const user = result.rows[0] || null;
+  if (user && getAdminEmails().includes(String(user.email || '').trim().toLowerCase())) {
+    user.role = 'admin';
+  }
+  return user;
 }
 
 app.get("/health", (req, res) => {

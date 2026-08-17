@@ -1,0 +1,20 @@
+LilianTech Admin Role Fix v3
+
+This version fixes the issue where a designated administrator could log in
+but still see the normal Member Dashboard.
+
+The three authorized administrator emails are:
+- wachirabernard983@gmail.com
+- stellawanjiku90@gmail.com
+- wachirabernard193@gmail.com
+
+Admin authorization is now based on the hard-coded authorized email list,
+not on a stale database role. Existing accounts are also promoted to role
+admin at startup.
+
+The normal dashboard exposes an "Admin • Members & Earnings" link only for
+these three accounts. The protected admin page and all /api/admin endpoints
+use the same authorization rule.
+
+The admin area includes registered members, completed surveys, earnings,
+withdrawals, and individual member activity.
