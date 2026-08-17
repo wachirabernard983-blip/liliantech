@@ -1032,34 +1032,73 @@ async function assignAvailableCampaigns(userId, minimum=SURVEY_BATCH_SIZE){
     ORDER BY c.created_at ASC,c.id ASC LIMIT $2::integer`,[uid,Number(minimum)]);
   for(const r of active.rows){await pool.query(`INSERT INTO survey_assignments(campaign_id,user_id,status) VALUES($1::integer,$2::integer,'available') ON CONFLICT(campaign_id,user_id) DO NOTHING`,[Number(r.id),uid]);}
 }
+async function ensureUnusedSurveyQuestionInventory(requiredCount){
+  const needed=Math.max(1,Number(requiredCount)||1);
+  for(let attempt=0; attempt<6; attempt++){
+    const unused=await pool.query(`
+      SELECT COUNT(*)::int AS n
+      FROM ai_questions q
+      WHERE q.active=TRUE
+        AND NOT EXISTS (
+          SELECT 1 FROM survey_campaigns c
+          CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.question_ids,'[]'::jsonb)) ids
+          WHERE ids::int=q.id
+        )
+    `);
+    if(Number(unused.rows[0]?.n||0)>=needed) return;
+    const before=Number(unused.rows[0]?.n||0);
+    const generated=await generateAiQuestionBatch();
+    const after=await pool.query(`
+      SELECT COUNT(*)::int AS n
+      FROM ai_questions q
+      WHERE q.active=TRUE
+        AND NOT EXISTS (
+          SELECT 1 FROM survey_campaigns c
+          CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.question_ids,'[]'::jsonb)) ids
+          WHERE ids::int=q.id
+        )
+    `);
+    const available=Number(after.rows[0]?.n||0);
+    if(generated<=0 && available<=before){
+      throw new Error('Unable to generate enough new survey questions for the next survey batch.');
+    }
+  }
+  throw new Error('Survey question inventory could not be replenished for the next batch.');
+}
+
 async function createSurveyCampaigns(count=1, notificationUserId=null){
-  const existing=await pool.query(`SELECT question_ids FROM survey_campaigns`);
-  const used=new Set(); for(const r of existing.rows){const ids=Array.isArray(r.question_ids)?r.question_ids:JSON.parse(r.question_ids||'[]'); ids.forEach(x=>used.add(Number(x)));}
   const needed=count*AI_SURVEY_SIZE;
-  const availableCount=Number((await pool.query(`SELECT COUNT(*)::int AS n FROM ai_questions WHERE active=TRUE ${used.size?'AND id <> ALL($1::int[])':''}`,used.size?[[...used]]:[])).rows[0].n||0);
-  if(availableCount<needed){await ensureAiQuestionInventory(null, Math.max(AI_QUESTION_BATCH_SIZE, needed+used.size+10));}
-  const q=await pool.query(`SELECT id,category,reward FROM ai_questions WHERE active=TRUE ${used.size?'AND id <> ALL($1::int[])':''} ORDER BY created_at ASC,id ASC LIMIT $${used.size?2:1}`, used.size?[[...used],needed]:[needed]);
+  await ensureUnusedSurveyQuestionInventory(needed);
+  const q=await pool.query(`
+    SELECT q.id,q.category,q.reward
+    FROM ai_questions q
+    WHERE q.active=TRUE
+      AND NOT EXISTS (
+        SELECT 1 FROM survey_campaigns c
+        CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(c.question_ids,'[]'::jsonb)) ids
+        WHERE ids::int=q.id
+      )
+    ORDER BY q.created_at ASC,q.id ASC
+    LIMIT $1
+  `,[needed]);
   let made=[];
-  for(let i=0;i+AI_SURVEY_SIZE<=q.rows.length && made.length<count;i+=AI_SURVEY_SIZE){const chunk=q.rows.slice(i,i+AI_SURVEY_SIZE);const cats=[...new Set(chunk.map(x=>x.category))];const category=cats.length===1?cats[0]:'Global Opinion';const rewardTotal=chunk.reduce((a,x)=>a+Number(x.reward||AI_QUESTION_REWARD),0);const title=await nextGlobalSurveyName();const ins=await pool.query(`INSERT INTO survey_campaigns(title,category,question_ids,reward_total,max_responses,status,owner_user_id) VALUES($1,$2,$3,$4,$5,'active',$6::integer) RETURNING id,title,category,reward_total,max_responses,response_count,owner_user_id`,[title,category,JSON.stringify(chunk.map(x=>Number(x.id))),rewardTotal,SURVEY_MAX_RESPONSES,notificationUserId?Number(notificationUserId):null]);made.push(ins.rows[0]);broadcastSurveyEvent({type:'new-survey',survey: {id:`campaign-${ins.rows[0].id}`,title:ins.rows[0].title}});}
-  for(const c of made){sendNewSurveyNotifications(c, notificationUserId).catch(e=>console.warn('Notification dispatch failed:',e.message));}
+  for(let i=0;i+AI_SURVEY_SIZE<=q.rows.length && made.length<count;i+=AI_SURVEY_SIZE){
+    const chunk=q.rows.slice(i,i+AI_SURVEY_SIZE);
+    const cats=[...new Set(chunk.map(x=>x.category))];
+    const category=cats.length===1?cats[0]:'Global Opinion';
+    const rewardTotal=chunk.reduce((a,x)=>a+Number(x.reward||AI_QUESTION_REWARD),0);
+    const title=await nextGlobalSurveyName();
+    const ins=await pool.query(
+      `INSERT INTO survey_campaigns(title,category,question_ids,reward_total,max_responses,status,owner_user_id)
+       VALUES($1,$2,$3,$4,$5,'active',$6::integer)
+       RETURNING id,title,category,reward_total,max_responses,response_count,owner_user_id`,
+      [title,category,JSON.stringify(chunk.map(x=>Number(x.id))),rewardTotal,SURVEY_MAX_RESPONSES,notificationUserId?Number(notificationUserId):null]
+    );
+    made.push(ins.rows[0]);
+    broadcastSurveyEvent({type:'new-survey',survey:{id:`campaign-${ins.rows[0].id}`,title:ins.rows[0].title}});
+  }
+  for(const c of made) sendNewSurveyNotifications(c,notificationUserId).catch(e=>console.warn('Notification dispatch failed:',e.message));
   return made;
-}
-async function nextGlobalSurveyName(){const used=await pool.query(`SELECT LOWER(title) title FROM survey_campaigns`);const set=new Set(used.rows.map(r=>String(r.title||'').toLowerCase()));let candidates=[];try{candidates=await generateAiProjectNames(10);}catch{};candidates=[...candidates,...FALLBACK_PROJECT_NAMES];const pick=candidates.find(x=>!set.has(String(x).toLowerCase()));return pick||`Aether-${Date.now()}`;}
-async function getAllSurveyInventory(user = null, req = null) {
-  if (!user) return [];
-  return await getActiveCampaignsForUser(user.id);
-}
-async function getSurveyById(surveyId, user = null, req = null) {
-  if(!user) return null;
-  const id=String(surveyId||'').replace(/^campaign-/,'');
-  if(!/^\d+$/.test(id)) return null;
-  const r=await pool.query(`SELECT c.id,c.title,c.category,c.reward_total,c.max_responses,c.response_count,c.status,c.question_ids,a.status AS assignment_status,a.answers
-    FROM survey_campaigns c JOIN survey_assignments a ON a.campaign_id=c.id AND a.user_id=$2::integer WHERE c.id=$1::integer`,[Number(id),Number(user.id)]);
-  const b=r.rows[0]; if(!b) return null;
-  const ids=(Array.isArray(b.question_ids)?b.question_ids:JSON.parse(b.question_ids||'[]')).map(Number).filter(Number.isFinite);
-  const qs=await pool.query(`SELECT id,category,topic,region,question,options,reward FROM ai_questions WHERE id=ANY($1::int[]) AND active=TRUE ORDER BY array_position($1::int[],id)`,[ids]);
-  let answers={}; try{answers=typeof b.answers==='object'&&b.answers?b.answers:JSON.parse(b.answers||'{}')}catch{}
-  return {id:`campaign-${b.id}`,title:b.title,category:b.category,reward:Number(b.reward_total),status:b.assignment_status,questionCount:ids.length,questions:qs.rows.map((q,i)=>({id:q.id,questionNumber:i+1,category:q.category,topic:q.topic,region:q.region,question:q.question,options:Array.isArray(q.options)?q.options:JSON.parse(q.options||'[]'),reward:Number(q.reward),answer:answers[String(q.id)]||null}))};
 }
 
 function getWithdrawalMethods() {
@@ -1241,18 +1280,39 @@ app.post('/api/admin/withdrawals/:id/process', requireAdmin, async (req,res) => 
 });
 
 async function releaseDueSurveyBatches(){
-  const due=await pool.query(`SELECT id FROM users WHERE next_survey_batch_at IS NOT NULL AND next_survey_batch_at<=NOW() ORDER BY id`);
+  const due=await pool.query(`
+    SELECT id FROM users
+    WHERE next_survey_batch_at IS NOT NULL AND next_survey_batch_at<=NOW()
+    ORDER BY id
+  `);
   for(const row of due.rows){
     const uid=Number(row.id);
     try{
-      const active=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments a JOIN survey_campaigns c ON c.id=a.campaign_id WHERE a.user_id=$1::integer AND a.status IN ('available','in_progress') AND c.status='active'`,[uid]);
-      const completed=await pool.query(`SELECT COUNT(*)::int AS count FROM survey_assignments WHERE user_id=$1::integer AND status='completed'`,[uid]);
-      if(Number(active.rows[0].count)>0 || Number(completed.rows[0].count)%SURVEY_BATCH_SIZE!==0){continue;}
+      const active=await pool.query(`
+        SELECT COUNT(*)::int AS count
+        FROM survey_assignments a
+        JOIN survey_campaigns c ON c.id=a.campaign_id
+        WHERE a.user_id=$1::integer
+          AND a.status IN ('available','in_progress')
+          AND c.status='active'
+          AND (c.expires_at IS NULL OR c.expires_at>NOW())
+      `,[uid]);
+      const completed=await pool.query(`
+        SELECT COUNT(*)::int AS count FROM survey_assignments
+        WHERE user_id=$1::integer AND status='completed'
+      `,[uid]);
+      if(Number(active.rows[0].count)>0 || Number(completed.rows[0].count)%SURVEY_BATCH_SIZE!==0) continue;
+
       const made=await createSurveyCampaigns(SURVEY_BATCH_SIZE,uid);
       if(made.length===SURVEY_BATCH_SIZE){
         await pool.query(`UPDATE users SET next_survey_batch_at=NULL WHERE id=$1::integer`,[uid]);
+        console.log(`Released ${SURVEY_BATCH_SIZE} new surveys for user ${uid}.`);
+      }else{
+        console.warn(`Only ${made.length}/${SURVEY_BATCH_SIZE} surveys were created for user ${uid}; retrying on the next scheduler cycle.`);
       }
-    }catch(e){console.warn(`Unable to release survey batch for user ${uid}:`,e.message);}
+    }catch(e){
+      console.warn(`Unable to release survey batch for user ${uid}:`,e.message);
+    }
   }
 }
 

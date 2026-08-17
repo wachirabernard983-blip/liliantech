@@ -1,0 +1,14 @@
+Implemented dashboard and survey scheduling changes:
+- Sidebar administrator link is labeled "Admin".
+- Corrected all three administrator email addresses in dashboard code.
+- Removed Withdrawals from the member dashboard UI.
+- Removed payout/withdrawal fields from the member Profile UI.
+- Overview now uses "View earnings" instead of "Withdraw earnings".
+- LilianTech branding is aligned to the far-left of the dashboard header.
+- Improved dashboard spacing, card balance, responsive layout and header alignment.
+- Dashboard polls for survey changes every 60 seconds.
+- Server scheduler runs every minute.
+- Fixed the replenishment bug: the server now counts UNUSED AI questions, not total AI questions.
+- The server generates additional AI questions when the unused pool is insufficient.
+- Five new surveys are released 30 minutes after a user completes a full five-survey batch, even if the user is offline.
+- If generation temporarily fails, the scheduled release is retained and retried on the next scheduler cycle.
