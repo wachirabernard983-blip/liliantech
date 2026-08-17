@@ -18,5 +18,5 @@ SMTP_PORT=465
 SMTP_SECURE=true
 SMTP_USER=resend
 SMTP_PASS=<Resend API key>
-NOTIFICATION_FROM=LilianTech <notifications@liliantech.online>
+NOTIFICATION_FROM=LilianTech <support@liliantech.online>
 NOTIFICATION_EMAIL_ENABLED=true

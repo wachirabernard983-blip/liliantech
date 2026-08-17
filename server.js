@@ -1167,9 +1167,9 @@ function getNotificationEmailTransport() {
   const user=String(process.env.SMTP_USER||'').trim();
   const pass=String(process.env.SMTP_PASS||'').trim();
   if(!host||!user||!pass) return null;
-  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass}});
+  return nodemailer.createTransport({host,port:Number(process.env.SMTP_PORT||587),secure:String(process.env.SMTP_SECURE||'false').toLowerCase()==='true',auth:{user,pass},connectionTimeout:10000,greetingTimeout:10000,socketTimeout:15000});
 }
-function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'notifications@liliantech.online').trim();}
+function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'support@liliantech.online').trim();}
 async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const users=targetUserId
     ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE`,[Number(targetUserId)])
@@ -1177,7 +1177,7 @@ async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
   const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
   if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
-    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:notifications@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
+    try{webpush.setVapidDetails(String(process.env.VAPID_SUBJECT||'mailto:support@liliantech.online'),vapidPublic,String(process.env.VAPID_PRIVATE_KEY));}catch(e){console.warn('Push VAPID setup failed:',e.message);}
   }
   for(const u of users.rows){
     const subject=`New survey available: ${campaign.title}`;
