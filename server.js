@@ -121,6 +121,18 @@ async function initializeDatabase() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_attempts INTEGER NOT NULL DEFAULT 0;
 
     CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified_at);
+    CREATE TABLE IF NOT EXISTS pending_registrations (
+      id SERIAL PRIMARY KEY,
+      full_name VARCHAR(120) NOT NULL,
+      email VARCHAR(255) UNIQUE NOT NULL,
+      terms_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+      privacy_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+      verification_code_hash VARCHAR(64),
+      verification_expires_at TIMESTAMPTZ,
+      verification_attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_registrations_email ON pending_registrations(email);
 
     CREATE TABLE IF NOT EXISTS survey_activity (
       id SERIAL PRIMARY KEY,
@@ -721,6 +733,58 @@ function hashVerificationCode(code){
 function generateVerificationCode(){
   return String(crypto.randomInt(100000,1000000));
 }
+
+async function sendVerificationCodeEmail(email, code, isResend=false){
+  const mailer=getNotificationEmailTransport();
+  if(!mailer) throw new Error("Email delivery is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER and SMTP_PASS in Render.");
+  await mailer.sendMail({
+    from:notificationFrom(),
+    to:email,
+    subject:isResend ? "Your LilianTech verification code" : "Your LilianTech verification code",
+    text:`Your LilianTech verification code is ${code}. It expires in 10 minutes. If you did not request this, you can ignore this email.`,
+    html:`<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px">
+      <h2 style="margin:0 0 16px">Verify your LilianTech email</h2>
+      <p>Use this code to continue creating your LilianTech account:</p>
+      <div style="font-size:34px;letter-spacing:9px;font-weight:700;margin:26px 0">${code}</div>
+      <p>This code expires in <strong>10 minutes</strong>.</p>
+      <p>After your email is verified, you will be asked to create your password.</p>
+      <p>If you did not request this, you can ignore this email.</p>
+    </div>`
+  });
+}
+
+async function issuePendingVerification(email, isResend=false){
+  const code=generateVerificationCode();
+  const expiresAt=new Date(Date.now()+10*60*1000);
+  await pool.query(
+    `UPDATE pending_registrations
+     SET verification_code_hash=$1,verification_expires_at=$2,verification_attempts=0
+     WHERE email=$3`,
+    [hashVerificationCode(code),expiresAt,email]
+  );
+  await sendVerificationCodeEmail(email,code,isResend);
+}
+
+async function verifyPendingEmailCode(email, code){
+  const result=await pool.query(
+    `SELECT id,full_name,email,terms_accepted,privacy_accepted,
+            verification_code_hash,verification_expires_at,verification_attempts
+     FROM pending_registrations WHERE email=$1`,
+    [email]
+  );
+  if(!result.rows.length) return {ok:false,error:"No pending registration was found for this email."};
+  const pending=result.rows[0];
+  if(pending.verification_attempts>=5) return {ok:false,error:"Too many incorrect codes. Request a new code."};
+  if(!pending.verification_code_hash || !pending.verification_expires_at) return {ok:false,error:"No active verification code. Request a new code."};
+  if(new Date(pending.verification_expires_at).getTime()<Date.now()) return {ok:false,error:"That code has expired. Request a new code."};
+  if(hashVerificationCode(code)!==pending.verification_code_hash){
+    await pool.query(`UPDATE pending_registrations SET verification_attempts=verification_attempts+1 WHERE id=$1`,[pending.id]);
+    return {ok:false,error:"The verification code is incorrect."};
+  }
+  return {ok:true,pending};
+}
+
+/* Backward-compatible helper for existing unverified accounts. */
 async function issueEmailVerification(userId, email, isResend=false){
   const code=generateVerificationCode();
   const expiresAt=new Date(Date.now()+10*60*1000);
@@ -728,17 +792,10 @@ async function issueEmailVerification(userId, email, isResend=false){
     `UPDATE users SET email_verification_code_hash=$1,email_verification_expires_at=$2,email_verification_attempts=0 WHERE id=$3`,
     [hashVerificationCode(code),expiresAt,userId]
   );
-  const mailer=getNotificationEmailTransport();
-  if(!mailer) throw new Error("Email delivery is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASS.");
-  await mailer.sendMail({
-    from:notificationFrom(),
-    to:email,
-    subject:isResend?"Your LilianTech verification code":"Verify your LilianTech email",
-    text:`Your LilianTech verification code is ${code}. It expires in 10 minutes. If you did not create this account, you can ignore this email.`,
-    html:`<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><h2>Verify your LilianTech email</h2><p>Use the code below to verify your email address:</p><div style="font-size:32px;letter-spacing:8px;font-weight:700;margin:24px 0">${code}</div><p>This code expires in 10 minutes.</p><p>If you did not create this account, you can ignore this email.</p></div>`
-  });
+  await sendVerificationCodeEmail(email,code,isResend);
 }
-async function verifyEmailCode(email, code){
+
+async function verifyExistingUserEmailCode(email, code){
   const result=await pool.query(
     `SELECT id,email,email_verification_code_hash,email_verification_expires_at,email_verification_attempts
      FROM users WHERE email=$1`,[email]
@@ -759,36 +816,51 @@ async function verifyEmailCode(email, code){
   return {ok:true,userId:user.id};
 }
 
-app.post("/api/register", authRateLimit, async (req, res) => {
-  try {
-    const { fullName, email, password, termsAccepted, privacyAccepted } = req.body;
-    if (!fullName || !email || !password) return res.status(400).json({error:"Full name, email and password are required."});
-    if (!termsAccepted || !privacyAccepted) return res.status(400).json({error:"Please accept the Terms of Service and Privacy Policy to create your account."});
-    if (password.length < 8) return res.status(400).json({error:"Password must be at least 8 characters."});
+/*
+ * New registration flow:
+ * 1) full name + email + legal consent
+ * 2) send verification code immediately
+ * 3) verify code
+ * 4) only then collect/create the password
+ */
+app.post("/api/register/start", authRateLimit, async (req,res)=>{
+  try{
+    const {fullName,email,termsAccepted,privacyAccepted}=req.body||{};
+    if(!fullName || !email) return res.status(400).json({error:"Full name and email are required."});
+    if(!termsAccepted || !privacyAccepted) return res.status(400).json({error:"Please accept the Terms of Service and Privacy Policy to continue."});
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const existing = await pool.query("SELECT id,email_verified_at FROM users WHERE email=$1",[normalizedEmail]);
+    const normalizedEmail=String(email).trim().toLowerCase();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail))
+      return res.status(400).json({error:"Please enter a valid email address."});
+
+    const existing=await pool.query(`SELECT id,email_verified_at FROM users WHERE email=$1`,[normalizedEmail]);
     if(existing.rows.length){
       if(!existing.rows[0].email_verified_at){
-        await issueEmailVerification(existing.rows[0].id, normalizedEmail, true);
-        return res.status(200).json({verificationRequired:true,email:normalizedEmail,message:"A verification code has been sent to your email."});
+        await issueEmailVerification(existing.rows[0].id,normalizedEmail,true);
+        return res.json({verificationRequired:true,email:normalizedEmail,message:"A verification code has been sent to your email."});
       }
       return res.status(409).json({error:"An account with this email already exists. Please sign in."});
     }
 
-    const passwordHash=hashPassword(password);
-    const isAdminEmail=getAdminEmails().includes(normalizedEmail);
-    const result=await pool.query(
-      `INSERT INTO users(full_name,email,password_hash,role,terms_accepted_at,privacy_accepted_at,email_notifications_enabled)
-       VALUES($1,$2,$3,$4,NOW(),NOW(),TRUE)
-       RETURNING id,full_name,email,role,created_at`,
-      [fullName.trim(),normalizedEmail,passwordHash,isAdminEmail?'admin':'member']
+    await pool.query(
+      `INSERT INTO pending_registrations(full_name,email,terms_accepted,privacy_accepted)
+       VALUES($1,$2,TRUE,TRUE)
+       ON CONFLICT(email) DO UPDATE SET
+         full_name=EXCLUDED.full_name,
+         terms_accepted=EXCLUDED.terms_accepted,
+         privacy_accepted=EXCLUDED.privacy_accepted`,
+      [String(fullName).trim(),normalizedEmail]
     );
-    await issueEmailVerification(result.rows[0].id, normalizedEmail, false);
-    res.status(201).json({verificationRequired:true,email:normalizedEmail,message:"Account created. Check your email for the verification code."});
-  } catch(error){
-    console.error("Registration error:",error);
-    res.status(500).json({error:"Unable to create account."});
+    try{
+      await issuePendingVerification(normalizedEmail,false);
+    }catch(mailError){
+      await pool.query(`DELETE FROM pending_registrations WHERE email=$1`,[normalizedEmail]);
+      throw mailError;
+    }
+    res.status(200).json({verificationRequired:true,email:normalizedEmail,message:"A verification code has been sent to your email. Check your inbox before creating your password."});
+  }catch(error){
+    console.error("Registration start error:",error);
+    res.status(500).json({error:error.message||"Unable to send the verification code. Please try again."});
   }
 });
 
@@ -869,28 +941,105 @@ app.post("/api/verify-email", authRateLimit, async (req,res)=>{
     const email=String(req.body?.email||"").trim().toLowerCase();
     const code=String(req.body?.code||"").trim();
     if(!email || !/^\d{6}$/.test(code)) return res.status(400).json({error:"Enter the 6-digit verification code."});
-    const result=await verifyEmailCode(email,code);
-    if(!result.ok) return res.status(400).json({error:result.error});
-    await new Promise((resolve,reject)=>{
-      req.session.regenerate(err=>{
-        if(err)return reject(err);
-        req.session.userId=result.userId;
-        req.session.save(saveErr=>saveErr?reject(saveErr):resolve());
+
+    const pending=await verifyPendingEmailCode(email,code);
+    if(pending.ok){
+      await pool.query(`UPDATE pending_registrations SET verification_code_hash=NULL,verification_expires_at=NULL,verification_attempts=0 WHERE email=$1`,[email]);
+      await new Promise((resolve,reject)=>{
+        req.session.regenerate(err=>{
+          if(err)return reject(err);
+          req.session.pendingRegistrationEmail=email;
+          req.session.save(saveErr=>saveErr?reject(saveErr):resolve());
+        });
       });
-    });
-    res.json({message:"Email verified successfully.",redirect:"/dashboard.html"});
-  }catch(e){console.error("Email verification:",e);res.status(500).json({error:"Unable to verify your email right now."});}
+      return res.json({message:"Email verified successfully.",redirect:"/set-password.html"});
+    }
+
+    /* Existing-account verification remains supported. */
+    const existing=await pool.query(`SELECT id,email_verified_at FROM users WHERE email=$1`,[email]);
+    if(existing.rows.length && !existing.rows[0].email_verified_at){
+      const result=await verifyExistingUserEmailCode(email,code);
+      if(!result.ok) return res.status(400).json({error:result.error});
+      await new Promise((resolve,reject)=>{
+        req.session.regenerate(err=>{
+          if(err)return reject(err);
+          req.session.userId=result.userId;
+          req.session.save(saveErr=>saveErr?reject(saveErr):resolve());
+        });
+      });
+      return res.json({message:"Email verified successfully.",redirect:"/dashboard.html"});
+    }
+    return res.status(400).json({error:pending.error});
+  }catch(e){
+    console.error("Email verification:",e);
+    res.status(500).json({error:"Unable to verify your email right now."});
+  }
 });
+
 app.post("/api/resend-verification", authRateLimit, async (req,res)=>{
   try{
     const email=String(req.body?.email||"").trim().toLowerCase();
     if(!email)return res.status(400).json({error:"Email is required."});
+
+    const pending=await pool.query(`SELECT email FROM pending_registrations WHERE email=$1`,[email]);
+    if(pending.rows.length){
+      await issuePendingVerification(email,true);
+      return res.json({message:"A new verification code has been sent."});
+    }
+
     const result=await pool.query(`SELECT id,email_verified_at FROM users WHERE email=$1`,[email]);
-    if(!result.rows.length)return res.status(404).json({error:"No account was found for this email."});
+    if(!result.rows.length)return res.status(404).json({error:"No registration was found for this email."});
     if(result.rows[0].email_verified_at)return res.status(400).json({error:"This email is already verified. You can sign in."});
     await issueEmailVerification(result.rows[0].id,email,true);
     res.json({message:"A new verification code has been sent."});
-  }catch(e){console.error("Resend verification:",e);res.status(500).json({error:"Unable to send a new verification code."});}
+  }catch(e){
+    console.error("Resend verification:",e);
+    res.status(500).json({error:e.message||"Unable to send a new verification code."});
+  }
+});
+
+app.post("/api/register/complete", authRateLimit, async (req,res)=>{
+  try{
+    const email=String(req.session?.pendingRegistrationEmail||"").trim().toLowerCase();
+    const password=String(req.body?.password||"");
+    if(!email)return res.status(401).json({error:"Your verified registration session has expired. Please start again."});
+    if(password.length<8)return res.status(400).json({error:"Password must be at least 8 characters."});
+
+    const pending=await pool.query(
+      `SELECT full_name,email,terms_accepted,privacy_accepted FROM pending_registrations WHERE email=$1`,
+      [email]
+    );
+    if(!pending.rows.length)return res.status(410).json({error:"This registration has expired. Please start again."});
+    const p=pending.rows[0];
+
+    const existing=await pool.query(`SELECT id FROM users WHERE email=$1`,[email]);
+    if(existing.rows.length){
+      await pool.query(`DELETE FROM pending_registrations WHERE email=$1`,[email]);
+      return res.status(409).json({error:"An account with this email already exists. Please sign in."});
+    }
+
+    const isAdminEmail=getAdminEmails().includes(email);
+    const passwordHash=hashPassword(password);
+    const result=await pool.query(
+      `INSERT INTO users(full_name,email,password_hash,role,terms_accepted_at,privacy_accepted_at,email_notifications_enabled,email_verified_at)
+       VALUES($1,$2,$3,$4,NOW(),NOW(),TRUE,NOW())
+       RETURNING id,full_name,email,role,created_at`,
+      [p.full_name,email,passwordHash,isAdminEmail?'admin':'member']
+    );
+    await pool.query(`DELETE FROM pending_registrations WHERE email=$1`,[email]);
+
+    await new Promise((resolve,reject)=>{
+      req.session.regenerate(err=>{
+        if(err)return reject(err);
+        req.session.userId=result.rows[0].id;
+        req.session.save(saveErr=>saveErr?reject(saveErr):resolve());
+      });
+    });
+    res.status(201).json({message:"Account created successfully.",redirect:"/dashboard.html"});
+  }catch(e){
+    console.error("Registration completion error:",e);
+    res.status(500).json({error:"Unable to create your account right now."});
+  }
 });
 
 app.post("/api/logout", (req, res) => {

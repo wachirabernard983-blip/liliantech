@@ -6,7 +6,7 @@ Changes:
 - Dashboard sidebar label is `Admin`.
 - Removed Withdrawals from the member dashboard.
 - Removed payout fields from the member Profile form.
-- Changed the dashboard action to `View earnings`.
+- Changed the dashboard action to `Withdraw earnings`.
 - Aligned the LilianTech brand to the far-left of the dashboard header.
 - Preserved the existing admin authorization for the three designated admin emails.
 - Preserved the admin users, completed surveys and earnings endpoints.
