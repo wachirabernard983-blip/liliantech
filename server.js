@@ -114,6 +114,14 @@ async function initializeDatabase() {
       payment_details TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_code_hash VARCHAR(64);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_attempts INTEGER NOT NULL DEFAULT 0;
+
+    CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified_at);
+
     CREATE TABLE IF NOT EXISTS survey_activity (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -252,6 +260,8 @@ async function initializeDatabase() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_method VARCHAR(40)`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_details TEXT`);
+  // Existing accounts predate email verification; treat them as verified during rollout.
+  await pool.query(`UPDATE users SET email_verified_at=COALESCE(email_verified_at, created_at) WHERE email_verified_at IS NULL`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS privacy_accepted_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS provider_reference VARCHAR(180)`);
@@ -704,61 +714,81 @@ app.get("/api/providers", requireAdmin, (req, res) => {
   );
 });
 
+
+function hashVerificationCode(code){
+  return crypto.createHash("sha256").update(String(code)).digest("hex");
+}
+function generateVerificationCode(){
+  return String(crypto.randomInt(100000,1000000));
+}
+async function issueEmailVerification(userId, email, isResend=false){
+  const code=generateVerificationCode();
+  const expiresAt=new Date(Date.now()+10*60*1000);
+  await pool.query(
+    `UPDATE users SET email_verification_code_hash=$1,email_verification_expires_at=$2,email_verification_attempts=0 WHERE id=$3`,
+    [hashVerificationCode(code),expiresAt,userId]
+  );
+  const mailer=getNotificationEmailTransport();
+  if(!mailer) throw new Error("Email delivery is not configured. Set SMTP_HOST, SMTP_USER and SMTP_PASS.");
+  await mailer.sendMail({
+    from:notificationFrom(),
+    to:email,
+    subject:isResend?"Your LilianTech verification code":"Verify your LilianTech email",
+    text:`Your LilianTech verification code is ${code}. It expires in 10 minutes. If you did not create this account, you can ignore this email.`,
+    html:`<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:24px"><h2>Verify your LilianTech email</h2><p>Use the code below to verify your email address:</p><div style="font-size:32px;letter-spacing:8px;font-weight:700;margin:24px 0">${code}</div><p>This code expires in 10 minutes.</p><p>If you did not create this account, you can ignore this email.</p></div>`
+  });
+}
+async function verifyEmailCode(email, code){
+  const result=await pool.query(
+    `SELECT id,email,email_verification_code_hash,email_verification_expires_at,email_verification_attempts
+     FROM users WHERE email=$1`,[email]
+  );
+  if(!result.rows.length) return {ok:false,error:"No account was found for this email."};
+  const user=result.rows[0];
+  if(user.email_verification_attempts>=5) return {ok:false,error:"Too many incorrect codes. Request a new code."};
+  if(!user.email_verification_code_hash || !user.email_verification_expires_at) return {ok:false,error:"No active verification code. Request a new code."};
+  if(new Date(user.email_verification_expires_at).getTime()<Date.now()) return {ok:false,error:"That code has expired. Request a new code."};
+  if(hashVerificationCode(code)!==user.email_verification_code_hash){
+    await pool.query(`UPDATE users SET email_verification_attempts=email_verification_attempts+1 WHERE id=$1`,[user.id]);
+    return {ok:false,error:"The verification code is incorrect."};
+  }
+  await pool.query(
+    `UPDATE users SET email_verified_at=NOW(),email_verification_code_hash=NULL,email_verification_expires_at=NULL,email_verification_attempts=0 WHERE id=$1`,
+    [user.id]
+  );
+  return {ok:true,userId:user.id};
+}
+
 app.post("/api/register", authRateLimit, async (req, res) => {
   try {
     const { fullName, email, password, termsAccepted, privacyAccepted } = req.body;
-
-    if (!fullName || !email || !password) {
-      return res.status(400).json({
-        error: "Full name, email and password are required."
-      });
-    }
-
-    if (!termsAccepted || !privacyAccepted) {
-      return res.status(400).json({ error: "Please accept the Terms of Service and Privacy Policy to create your account." });
-    }
-
-    if (password.length < 8) {
-      return res.status(400).json({
-        error: "Password must be at least 8 characters."
-      });
-    }
+    if (!fullName || !email || !password) return res.status(400).json({error:"Full name, email and password are required."});
+    if (!termsAccepted || !privacyAccepted) return res.status(400).json({error:"Please accept the Terms of Service and Privacy Policy to create your account."});
+    if (password.length < 8) return res.status(400).json({error:"Password must be at least 8 characters."});
 
     const normalizedEmail = email.trim().toLowerCase();
-
-    const existingUser = await pool.query(
-      "SELECT id FROM users WHERE email = $1",
-      [normalizedEmail]
-    );
-
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({
-        error: "An account with this email already exists."
-      });
+    const existing = await pool.query("SELECT id,email_verified_at FROM users WHERE email=$1",[normalizedEmail]);
+    if(existing.rows.length){
+      if(!existing.rows[0].email_verified_at){
+        await issueEmailVerification(existing.rows[0].id, normalizedEmail, true);
+        return res.status(200).json({verificationRequired:true,email:normalizedEmail,message:"A verification code has been sent to your email."});
+      }
+      return res.status(409).json({error:"An account with this email already exists. Please sign in."});
     }
 
-    const passwordHash = hashPassword(password);
-
-    const isAdminEmail = getAdminEmails().includes(normalizedEmail);
-    const result = await pool.query(
-      `INSERT INTO users
-       (full_name, email, password_hash, role, terms_accepted_at, privacy_accepted_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
-       RETURNING id, full_name, email, balance, role, created_at`,
-      [fullName.trim(), normalizedEmail, passwordHash, isAdminEmail ? 'admin' : 'member']
+    const passwordHash=hashPassword(password);
+    const isAdminEmail=getAdminEmails().includes(normalizedEmail);
+    const result=await pool.query(
+      `INSERT INTO users(full_name,email,password_hash,role,terms_accepted_at,privacy_accepted_at,email_notifications_enabled)
+       VALUES($1,$2,$3,$4,NOW(),NOW(),TRUE)
+       RETURNING id,full_name,email,role,created_at`,
+      [fullName.trim(),normalizedEmail,passwordHash,isAdminEmail?'admin':'member']
     );
-
-    res.status(201).json({
-      message: "Account created successfully.",
-      user: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error("Registration error:", error);
-
-    res.status(500).json({
-      error: "Unable to create account."
-    });
+    await issueEmailVerification(result.rows[0].id, normalizedEmail, false);
+    res.status(201).json({verificationRequired:true,email:normalizedEmail,message:"Account created. Check your email for the verification code."});
+  } catch(error){
+    console.error("Registration error:",error);
+    res.status(500).json({error:"Unable to create account."});
   }
 });
 
@@ -775,7 +805,7 @@ app.post("/api/login", authRateLimit, async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
 
     const result = await pool.query(
-      `SELECT id, full_name, email, password_hash, balance
+      `SELECT id, full_name, email, password_hash, balance, email_verified_at
        FROM users
        WHERE email = $1`,
       [normalizedEmail]
@@ -792,6 +822,14 @@ app.post("/api/login", authRateLimit, async (req, res) => {
     if (!verifyPassword(password, user.password_hash)) {
       return res.status(401).json({
         error: "Invalid email or password."
+      });
+    }
+
+    if (!user.email_verified_at) {
+      return res.status(403).json({
+        verificationRequired: true,
+        email: user.email,
+        error: "Please verify your email before signing in."
       });
     }
 
@@ -824,6 +862,35 @@ app.post("/api/login", authRateLimit, async (req, res) => {
       error: "Unable to log in."
     });
   }
+});
+
+app.post("/api/verify-email", authRateLimit, async (req,res)=>{
+  try{
+    const email=String(req.body?.email||"").trim().toLowerCase();
+    const code=String(req.body?.code||"").trim();
+    if(!email || !/^\d{6}$/.test(code)) return res.status(400).json({error:"Enter the 6-digit verification code."});
+    const result=await verifyEmailCode(email,code);
+    if(!result.ok) return res.status(400).json({error:result.error});
+    await new Promise((resolve,reject)=>{
+      req.session.regenerate(err=>{
+        if(err)return reject(err);
+        req.session.userId=result.userId;
+        req.session.save(saveErr=>saveErr?reject(saveErr):resolve());
+      });
+    });
+    res.json({message:"Email verified successfully.",redirect:"/dashboard.html"});
+  }catch(e){console.error("Email verification:",e);res.status(500).json({error:"Unable to verify your email right now."});}
+});
+app.post("/api/resend-verification", authRateLimit, async (req,res)=>{
+  try{
+    const email=String(req.body?.email||"").trim().toLowerCase();
+    if(!email)return res.status(400).json({error:"Email is required."});
+    const result=await pool.query(`SELECT id,email_verified_at FROM users WHERE email=$1`,[email]);
+    if(!result.rows.length)return res.status(404).json({error:"No account was found for this email."});
+    if(result.rows[0].email_verified_at)return res.status(400).json({error:"This email is already verified. You can sign in."});
+    await issueEmailVerification(result.rows[0].id,email,true);
+    res.json({message:"A new verification code has been sent."});
+  }catch(e){console.error("Resend verification:",e);res.status(500).json({error:"Unable to send a new verification code."});}
 });
 
 app.post("/api/logout", (req, res) => {
@@ -956,8 +1023,8 @@ function getNotificationEmailTransport() {
 function notificationFrom(){return String(process.env.NOTIFICATION_FROM||process.env.SMTP_USER||'notifications@liliantech.online').trim();}
 async function sendNewSurveyNotifications(campaign, targetUserId=null) {
   const users=targetUserId
-    ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL`,[Number(targetUserId)])
-    : await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL ORDER BY id`);
+    ? await pool.query(`SELECT id,email,full_name FROM users WHERE id=$1 AND email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE`,[Number(targetUserId)])
+    : await pool.query(`SELECT id,email,full_name FROM users WHERE email IS NOT NULL AND email_verified_at IS NOT NULL AND email_notifications_enabled=TRUE ORDER BY id`);
   const emailer=NOTIFICATION_EMAIL_ENABLED?getNotificationEmailTransport():null;
   const vapidPublic=String(process.env.VAPID_PUBLIC_KEY||'').trim();
   if(NOTIFICATION_PUSH_ENABLED && webpush && vapidPublic && process.env.VAPID_PRIVATE_KEY){
@@ -1394,6 +1461,21 @@ app.get('/api/surveys/stream', requireAuth, async (req,res)=>{res.set({'Content-
 app.get('/api/notifications/config', requireAuth, (req,res)=>res.json({pushEnabled:Boolean(NOTIFICATION_PUSH_ENABLED&&webpush&&process.env.VAPID_PUBLIC_KEY&&process.env.VAPID_PRIVATE_KEY),publicKey:String(process.env.VAPID_PUBLIC_KEY||'')}));
 app.post('/api/notifications/push/subscribe', requireAuth, async (req,res)=>{try{const s=req.body||{};if(!s.endpoint||!s.keys?.p256dh||!s.keys?.auth)return res.status(400).json({error:'Invalid push subscription.'});await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,updated_at) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,p256dh=EXCLUDED.p256dh,auth=EXCLUDED.auth,updated_at=NOW()`,[req.session.userId,s.endpoint,s.keys.p256dh,s.keys.auth]);res.json({message:'Push notifications enabled.'});}catch(e){console.error('Push subscribe:',e);res.status(500).json({error:'Unable to enable push notifications.'});}});
 app.post('/api/notifications/push/unsubscribe', requireAuth, async (req,res)=>{try{if(req.body?.endpoint)await pool.query(`DELETE FROM push_subscriptions WHERE user_id=$1 AND endpoint=$2`,[req.session.userId,req.body.endpoint]);res.json({message:'Push notifications disabled.'});}catch(e){res.status(500).json({error:'Unable to disable push notifications.'});}});
+app.get('/api/notifications/preferences', requireAuth, async (req,res)=>{
+  try{
+    const r=await pool.query(`SELECT email_notifications_enabled,email_verified_at FROM users WHERE id=$1`,[req.session.userId]);
+    if(!r.rows.length)return res.status(404).json({error:"Account not found."});
+    res.json({emailEnabled:Boolean(r.rows[0].email_notifications_enabled),emailVerified:Boolean(r.rows[0].email_verified_at),pushSupported:Boolean(webpush && process.env.VAPID_PUBLIC_KEY)});
+  }catch(e){res.status(500).json({error:"Unable to load notification preferences."});}
+});
+app.put('/api/notifications/preferences', requireAuth, async (req,res)=>{
+  try{
+    const emailEnabled=Boolean(req.body?.emailEnabled);
+    await pool.query(`UPDATE users SET email_notifications_enabled=$1 WHERE id=$2`,[emailEnabled,req.session.userId]);
+    res.json({message:"Notification preferences updated.",emailEnabled});
+  }catch(e){res.status(500).json({error:"Unable to update notification preferences."});}
+});
+
 
 
 (async () => {

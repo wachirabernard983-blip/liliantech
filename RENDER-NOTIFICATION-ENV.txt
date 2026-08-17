@@ -1,0 +1,22 @@
+LilianTech production notification environment variables
+
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=resend
+SMTP_PASS=<YOUR_RESEND_API_KEY>
+NOTIFICATION_FROM=LilianTech <notifications@liliantech.online>
+NOTIFICATION_EMAIL_ENABLED=true
+
+NOTIFICATION_PUSH_ENABLED=true
+VAPID_PUBLIC_KEY=<YOUR_VAPID_PUBLIC_KEY>
+VAPID_PRIVATE_KEY=<YOUR_VAPID_PRIVATE_KEY>
+VAPID_SUBJECT=mailto:notifications@liliantech.online
+
+APP_BASE_URL=https://liliantech.online
+
+IMPORTANT:
+- Do NOT put SMTP_PASS or VAPID_PRIVATE_KEY in GitHub.
+- Add them only to Render Environment Variables.
+- Keep the same VAPID key pair permanently for existing browser subscriptions.
+- Resend SMTP uses smtp.resend.com:465, username "resend", and the Resend API key as the password.
