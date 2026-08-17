@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/styles.css">
 <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301" crossorigin="anonymous"></script>
 </head>
-<body class="public-page">
+<body class="public-page page-enter">
 <header class="site-header">
   <div class="container nav">
     <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
@@ -44,7 +44,7 @@
 <script>
 (function(){
  const header=document.querySelector('.site-header'), btn=header?.querySelector('.mobile-menu'), mobile=header?.querySelector('.mobile-nav');
- if(btn&&mobile){btn.addEventListener('click',()=>{const open=btn.getAttribute('aria-expanded')==='true';btn.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});}
+ if(btn&&mobile){btn.addEventListener('click',()=>{const open=btn.getAttribute('aria-expanded')==='true';btn.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});mobile.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{mobile.hidden=true;btn.setAttribute('aria-expanded','false')}));}
 })();
 const form=document.getElementById('registerForm');
 const message=document.getElementById('message');

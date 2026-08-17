@@ -134,3 +134,25 @@ body{margin:0;min-width:320px;overflow-x:hidden}
   .notification-card{display:block}
   .notification-actions{justify-content:flex-start;min-width:0;margin-top:18px}
 }
+
+
+/* LilianTech V7.2 — authentication and navigation consistency */
+.auth-form > div{display:block;min-width:0}
+.auth-form > div > label{display:block;margin:0 0 7px;font-size:14px;font-weight:750;color:#344054}
+.password-field{position:relative}
+.password-field input{padding-right:56px}
+.password-toggle{position:absolute;right:10px;bottom:7px;min-width:42px;height:36px;border:0;background:transparent;border-radius:9px;color:#667085;font-size:13px;font-weight:750;cursor:pointer}
+.password-toggle:hover{background:#f4f3ff;color:#5146d8;transform:none}
+.password-toggle:focus-visible{outline:2px solid var(--lt-primary);outline-offset:2px}
+.auth-help{display:flex;justify-content:flex-end;margin-top:-8px;font-size:14px}
+.auth-help a{color:#5b50d6;font-weight:750}
+.auth-actions{display:grid;gap:10px}
+.auth-divider{height:1px;background:#eceef3;margin:22px 0}
+.page-enter{animation:ltPageEnter .22s ease-out both}
+@keyframes ltPageEnter{from{opacity:.72;transform:translateY(3px)}to{opacity:1;transform:none}}
+.dashboard-header .nav{width:100%;max-width:none;padding:0 32px}
+.dashboard-header .brand{margin-right:0}
+.dashboard-account{margin-left:auto;display:flex!important;align-items:center;justify-content:flex-end;gap:12px;min-width:0}
+.dashboard-account .account-email{max-width:42vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#667085;font-size:14px}
+@media(max-width:700px){.dashboard-header .nav{padding:0 18px}.dashboard-account .account-email{max-width:35vw;font-size:12px}.password-toggle{right:7px}}
+@media(max-width:560px){.auth-help{justify-content:flex-start}.dashboard-account .account-email{display:none}.dashboard-account{gap:8px}.dashboard-header .nav{min-height:68px}.dashboard-header .brand{font-size:21px}}

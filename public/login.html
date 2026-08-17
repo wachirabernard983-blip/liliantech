@@ -1,148 +1,33 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#6d5dfc">
-  <title>Sign in — LilianTech</title>
-  <link rel="stylesheet" href="/styles.css">
-<link rel="manifest" href="/manifest.webmanifest">
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301"
-     crossorigin="anonymous"></script>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#6d5dfc"><title>Sign in — LilianTech</title>
+<link rel="stylesheet" href="/styles.css"><link rel="manifest" href="/manifest.webmanifest">
 </head>
-<body class="auth-page">
-  <header class="site-header">
-  <div class="container nav">
-    <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
-    <nav class="desktop-nav" aria-label="Main navigation">
-      <a href="/#how">How it works</a>
-      <a href="/#payouts">Payouts</a>
-      <a href="/login.html">Log in</a>
-      <a class="button primary" href="/register.html">Get started</a>
-    </nav>
-    <button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button>
-  </div>
-  <div class="mobile-nav" hidden>
-    <a href="/#how">How it works</a>
-    <a href="/#payouts">Payouts</a>
-    <a href="/login.html">Log in</a>
-    <a class="button primary" href="/register.html">Get started</a>
-  </div>
-</header>
-  <main class="auth-main">
-    <div class="container auth-container">
-      <section class="auth-card card">
-        <div class="eyebrow">WELCOME BACK</div>
-        <h1>Sign in to LilianTech.</h1>
-        <p class="muted">Pick up where you left off.</p>
-        <form id="loginForm" class="auth-form">
-          <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
-          <div><label for="password">Password</label><input id="password" name="password" type="password" placeholder="Your password" autocomplete="current-password" required></div>
-          <button class="button primary" type="submit">Sign in</button>
-        </form>
-        <p id="message" class="form-message muted" aria-live="polite"></p>
-        <p class="auth-switch muted">New here? <a href="/register.html">Create an account</a></p>
-      </section>
-    </div>
-  </main>
-  <footer class="public-footer">
-  <div class="container footer-inner">
-    <span>© 2026 LilianTech</span>
-    <nav aria-label="Footer navigation">
-      <a href="/about.html">About</a>
-      <a href="/contact.html">Contact</a>
-      <a href="/faq.html">FAQ</a>
-      <a href="/cookie-policy.html">Cookie Policy</a>
-      <a href="/privacy.html">Privacy Policy</a>
-      <a href="/terms.html">Terms of Service</a>
-    </nav>
-  </div>
-</footer>
-  <script>
-(function () {
-  const header = document.querySelector('.site-header');
-  const button = header?.querySelector('.mobile-menu');
-  const mobile = header?.querySelector('.mobile-nav');
-  if (button && mobile) {
-    button.addEventListener('click', () => {
-      const open = button.getAttribute('aria-expanded') === 'true';
-      button.setAttribute('aria-expanded', String(!open));
-      mobile.hidden = open;
-    });
-    mobile.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
-      mobile.hidden = true;
-      button.setAttribute('aria-expanded', 'false');
-    }));
-  }
-})();
-</script>
+<body class="public-page page-enter">
+<header class="site-header"><div class="container nav">
+<a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+<nav class="desktop-nav" aria-label="Main navigation"><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></nav>
+<button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button></div>
+<div class="mobile-nav" hidden><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></div></header>
+<main class="public-main"><div class="container public-container"><section class="auth-card card">
+<div class="eyebrow">WELCOME BACK</div><h1>Sign in to LilianTech.</h1><p class="public-intro" style="margin-bottom:28px">Pick up where you left off.</p>
+<form id="loginForm" class="auth-form">
+<div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="email" required></div>
+<div><label for="password">Password</label><div class="password-field"><input id="password" name="password" type="password" placeholder="Your password" autocomplete="current-password" required><button class="password-toggle" type="button" data-password-toggle="password" aria-label="Show password" aria-pressed="false">Show</button></div></div>
+<div class="auth-help"><a href="/forgot-password.html">Forgot your password?</a></div>
+<div class="auth-actions"><button class="button primary" type="submit">Sign in</button></div>
+</form>
+<p id="message" class="form-message muted" aria-live="polite"></p>
+<div class="auth-divider"></div><p class="auth-switch muted">New here? <a href="/register.html">Create an account</a></p>
+</section></div></main>
+<footer class="public-footer"><div class="container footer-inner"><span>© 2026 LilianTech</span><nav aria-label="Footer navigation"><a href="/about.html">About</a><a href="/contact.html">Contact</a><a href="/faq.html">FAQ</a><a href="/cookie-policy.html">Cookie Policy</a><a href="/privacy.html">Privacy Policy</a><a href="/terms.html">Terms of Service</a></nav></div></footer>
 <script>
-    const form = document.getElementById('loginForm');
-    const message = document.getElementById('message');
-    const submitButton = form.querySelector('button[type="submit"]');
-
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('registered') === '1') {
-      message.textContent = 'Account created successfully. Please sign in.';
-    }
-
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      message.textContent = 'Signing in…';
-      submitButton.disabled = true;
-
-      const email = document.getElementById('email').value.trim().toLowerCase();
-      const password = document.getElementById('password').value;
-
-      try {
-        const response = await fetch('/api/login', {
-          method: 'POST',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-
-        const raw = await response.text();
-        let data = {};
-        try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
-
-        if (!response.ok) {
-          if (response.status === 403 && data.verificationRequired) {
-            message.textContent = 'Please verify your email first. Opening verification…';
-            window.location.href = '/verify-email.html?email=' + encodeURIComponent(data.email || email);
-            return;
-          }
-          message.textContent = data.error || `Unable to sign in (HTTP ${response.status}).`;
-          submitButton.disabled = false;
-          return;
-        }
-
-        // Confirm that the session cookie created by the login endpoint is usable
-        // before navigating to the protected dashboard.
-        const sessionCheck = await fetch('/api/me', {
-          method: 'GET',
-          credentials: 'same-origin',
-          cache: 'no-store',
-          headers: { 'Accept': 'application/json' }
-        });
-
-        if (!sessionCheck.ok) {
-          const checkRaw = await sessionCheck.text();
-          console.error('Login succeeded but session verification failed:', sessionCheck.status, checkRaw);
-          message.textContent = 'Your password was accepted, but the login session could not be established. Please try again.';
-          submitButton.disabled = false;
-          return;
-        }
-
-        message.textContent = 'Login successful. Opening your dashboard…';
-        window.location.href = '/dashboard.html';
-      } catch (error) {
-        console.error('Login request failed:', error);
-        message.textContent = 'Unable to connect right now. Please check your internet connection and try again.';
-        submitButton.disabled = false;
-      }
-    });
-  </script>
-</body>
-</html>
+(function(){const h=document.querySelector('.site-header'),b=h?.querySelector('.mobile-menu'),m=h?.querySelector('.mobile-nav');if(b&&m){b.addEventListener('click',()=>{const o=b.getAttribute('aria-expanded')==='true';b.setAttribute('aria-expanded',String(!o));m.hidden=o;});m.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{m.hidden=true;b.setAttribute('aria-expanded','false')}));}})();
+function setupPasswordToggle(button){const input=document.getElementById(button.dataset.passwordToggle);button.addEventListener('click',()=>{const show=input.type==='password';input.type=show?'text':'password';button.textContent=show?'Hide':'Show';button.setAttribute('aria-label',show?'Hide password':'Show password');button.setAttribute('aria-pressed',String(show));input.focus();});}
+document.querySelectorAll('[data-password-toggle]').forEach(setupPasswordToggle);
+const form=document.getElementById('loginForm'),message=document.getElementById('message'),submitButton=form.querySelector('button[type="submit"]');
+const params=new URLSearchParams(location.search);if(params.get('registered')==='1')message.textContent='Account created successfully. Please sign in.';if(params.get('reset')==='1')message.textContent='Your password has been reset successfully. Please sign in.';
+form.addEventListener('submit',async event=>{event.preventDefault();message.textContent='Signing in…';submitButton.disabled=true;const email=document.getElementById('email').value.trim().toLowerCase(),password=document.getElementById('password').value;try{const response=await fetch('/api/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({email,password})});const raw=await response.text();let data={};try{data=raw?JSON.parse(raw):{}}catch(_){}if(!response.ok){if(response.status===403&&data.verificationRequired){message.textContent='Please verify your email first. Opening verification…';window.location.href='/verify-email.html?email='+encodeURIComponent(data.email||email);return}message.textContent=data.error||`Unable to sign in (HTTP ${response.status}).`;submitButton.disabled=false;return}const sessionCheck=await fetch('/api/me',{method:'GET',credentials:'same-origin',cache:'no-store',headers:{'Accept':'application/json'}});if(!sessionCheck.ok){message.textContent='Your password was accepted, but the login session could not be established. Please try again.';submitButton.disabled=false;return}message.textContent='Login successful. Opening your dashboard…';window.location.href='/dashboard.html';}catch(error){console.error('Login request failed:',error);message.textContent='Unable to connect right now. Please try again.';submitButton.disabled=false;}});
+</script></body></html>

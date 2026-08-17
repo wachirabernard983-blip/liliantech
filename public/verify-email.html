@@ -5,7 +5,7 @@
 <title>Verify your email — LilianTech</title><link rel="stylesheet" href="/styles.css">
 <link rel="manifest" href="/manifest.webmanifest">
 </head>
-<body class="auth-page">
+<body class="public-page page-enter">
 <header class="site-header"><div class="container nav">
 <a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
 <nav class="desktop-nav" aria-label="Main navigation"><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></nav>
@@ -29,6 +29,6 @@ resend.addEventListener('click',async()=>{if(!email){msg.textContent='This verif
 </script>
 <script>
 const header=document.querySelector('.site-header'),button=header?.querySelector('.mobile-menu'),mobile=header?.querySelector('.mobile-nav');
-if(button&&mobile){button.addEventListener('click',()=>{const open=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});}
+if(button&&mobile){button.addEventListener('click',()=>{const open=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});mobile.querySelectorAll('a').forEach(a=>a.addEventListener('click',()=>{mobile.hidden=true;button.setAttribute('aria-expanded','false')}));}
 </script>
 </body></html>
