@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#6d5dfc">
   <title>Create account — LilianTech</title>
   <link rel="stylesheet" href="/styles.css">
+<link rel="manifest" href="/manifest.webmanifest">
 <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301"
      crossorigin="anonymous"></script>
 </head>
@@ -115,8 +117,8 @@
           return;
         }
 
-        message.textContent = 'Account created successfully. Opening sign in…';
-        window.location.href = '/login.html?registered=1';
+        message.textContent = 'Account created. Check your email for the verification code…';
+        window.location.href = '/verify-email.html?email=' + encodeURIComponent(data.email || email);
       } catch (error) {
         console.error('Registration request failed:', error);
         message.textContent = 'Unable to connect right now. Please check your internet connection and try again.';

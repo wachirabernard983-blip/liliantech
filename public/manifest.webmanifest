@@ -1,0 +1,9 @@
+{
+  "name": "LilianTech",
+  "short_name": "LilianTech",
+  "start_url": "/dashboard.html",
+  "display": "standalone",
+  "background_color": "#f8f9fc",
+  "theme_color": "#6d5dfc",
+  "description": "LilianTech survey and rewards platform."
+}

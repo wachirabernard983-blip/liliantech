@@ -1,2 +1,22 @@
-self.addEventListener('push',event=>{let data={title:'LilianTech',body:'A new survey is available.',url:'/dashboard.html#surveys'};try{data={...data,...event.data.json()}}catch{}event.waitUntil(self.registration.showNotification(data.title,{body:data.body,icon:'/favicon.ico',badge:'/favicon.ico',data:{url:data.url}}));});
-self.addEventListener('notificationclick',event=>{event.notification.close();const url=event.notification.data?.url||'/dashboard.html#surveys';event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{for(const c of list){if('focus' in c){c.navigate(url);return c.focus();}}return clients.openWindow(url);}));});
+self.addEventListener('push',event=>{
+  let data={title:'LilianTech',body:'A new survey is available.',url:'/dashboard.html#surveys'};
+  try{data={...data,...event.data.json()}}catch{}
+  event.waitUntil(self.registration.showNotification(data.title,{
+    body:data.body,
+    icon:'/favicon.ico',
+    badge:'/favicon.ico',
+    data:{url:data.url}
+  }));
+});
+self.addEventListener('notificationclick',event=>{
+  event.notification.close();
+  const url=event.notification.data?.url||'/dashboard.html#surveys';
+  event.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(list=>{
+    for(const c of list){
+      if('focus' in c){c.navigate(url);return c.focus();}
+    }
+    return clients.openWindow(url);
+  }));
+});
+self.addEventListener('install',()=>self.skipWaiting());
+self.addEventListener('activate',event=>event.waitUntil(clients.claim()));

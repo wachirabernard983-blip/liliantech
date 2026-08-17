@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#6d5dfc">
   <title>Sign in — LilianTech</title>
   <link rel="stylesheet" href="/styles.css">
+<link rel="manifest" href="/manifest.webmanifest">
 <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-4309684826920301"
      crossorigin="anonymous"></script>
 </head>
@@ -106,6 +108,11 @@
         try { data = raw ? JSON.parse(raw) : {}; } catch (_) {}
 
         if (!response.ok) {
+          if (response.status === 403 && data.verificationRequired) {
+            message.textContent = 'Please verify your email first. Opening verification…';
+            window.location.href = '/verify-email.html?email=' + encodeURIComponent(data.email || email);
+            return;
+          }
           message.textContent = data.error || `Unable to sign in (HTTP ${response.status}).`;
           submitButton.disabled = false;
           return;

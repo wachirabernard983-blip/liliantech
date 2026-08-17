@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Verify your email — LilianTech</title><link rel="stylesheet" href="/styles.css">
+<link rel="manifest" href="/manifest.webmanifest">
+</head>
+<body class="auth-page">
+<header class="site-header"><div class="container nav">
+<a class="brand" href="/" aria-label="LilianTech home">Lilian<span>Tech</span></a>
+<nav class="desktop-nav" aria-label="Main navigation"><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></nav>
+<button class="mobile-menu" type="button" aria-label="Open menu" aria-expanded="false">☰</button></div>
+<div class="mobile-nav" hidden><a href="/#how">How it works</a><a href="/#payouts">Payouts</a><a href="/login.html">Log in</a><a class="button primary" href="/register.html">Get started</a></div></header>
+<main class="auth-main"><div class="container auth-container"><section class="auth-card card">
+<div class="eyebrow">EMAIL VERIFICATION</div><h1>Check your email.</h1>
+<p class="muted">Enter the 6-digit code we sent to <strong id="emailLabel">your email</strong>. The code expires in 10 minutes.</p>
+<form id="verifyForm" class="auth-form"><div><label for="code">Verification code</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="\d{6}" placeholder="123456" required></div><button class="button primary" type="submit">Verify email</button></form>
+<p id="message" class="form-message muted" aria-live="polite"></p>
+<button id="resend" class="button secondary" type="button">Send a new code</button>
+<p class="auth-switch muted"><a href="/login.html">Back to sign in</a></p>
+</section></div></main>
+<script>
+const params=new URLSearchParams(location.search);
+const email=(params.get('email')||'').trim().toLowerCase();
+const emailLabel=document.getElementById('emailLabel'); if(email) emailLabel.textContent=email;
+const form=document.getElementById('verifyForm'), code=document.getElementById('code'), msg=document.getElementById('message'), resend=document.getElementById('resend');
+form.addEventListener('submit',async e=>{e.preventDefault();msg.textContent='Verifying…';try{const r=await fetch('/api/verify-email',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,code:code.value.trim()})});const d=await r.json();if(!r.ok){msg.textContent=d.error||'Unable to verify email.';return}msg.textContent='Email verified. Opening your dashboard…';location.replace(d.redirect||'/dashboard.html');}catch{msg.textContent='Unable to connect right now. Please try again.';}});
+resend.addEventListener('click',async()=>{if(!email){msg.textContent='This verification link does not contain an email address.';return}resend.disabled=true;msg.textContent='Sending a new code…';try{const r=await fetch('/api/resend-verification',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});const d=await r.json();msg.textContent=d.message||d.error||'Done.';}catch{msg.textContent='Unable to send a new code right now.';}finally{resend.disabled=false;}});
+</script>
+<script>
+const header=document.querySelector('.site-header'),button=header?.querySelector('.mobile-menu'),mobile=header?.querySelector('.mobile-nav');
+if(button&&mobile){button.addEventListener('click',()=>{const open=button.getAttribute('aria-expanded')==='true';button.setAttribute('aria-expanded',String(!open));mobile.hidden=open;});}
+</script>
+</body></html>

@@ -124,3 +124,13 @@ body{margin:0;min-width:320px;overflow-x:hidden}
   .public-footer .footer-inner{flex-direction:column;align-items:flex-start;gap:16px}
   .public-footer nav{justify-content:flex-start;gap:9px 16px}
 }
+
+.notification-card{display:flex;align-items:flex-start;justify-content:space-between;gap:28px}
+.notification-card h2{margin:.25rem 0 .45rem}
+.notification-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end;min-width:260px}
+.notification-toggle{display:inline-flex;align-items:center;gap:9px;font-weight:600;cursor:pointer;white-space:nowrap}
+.notification-toggle input{width:18px;height:18px;accent-color:var(--lt-primary)}
+@media(max-width:700px){
+  .notification-card{display:block}
+  .notification-actions{justify-content:flex-start;min-width:0;margin-top:18px}
+}

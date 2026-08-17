@@ -1,4 +1,5 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dashboard — LilianTech</title><link rel="stylesheet" href="/styles.css"><style>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Dashboard — LilianTech</title><link rel="stylesheet" href="/styles.css">
+<link rel="manifest" href="/manifest.webmanifest"><style>
 .shell{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 72px)}.side{border-right:1px solid #e8eaf0;padding:22px;position:sticky;top:72px;height:calc(100vh - 72px);background:#fff}.side a,.side button{display:block;width:100%;text-align:left;padding:12px 14px;border:0;background:transparent;border-radius:12px;margin:4px 0;cursor:pointer;color:inherit}.side a.active,.side a:hover,.side button:hover{background:#f1efff;color:#4f46e5}.content{padding:34px;max-width:1240px;width:100%}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.card{border:1px solid #e7e8ef;border-radius:18px;background:#fff;padding:20px;box-shadow:0 10px 30px rgba(31,35,60,.05)}.big{font-size:30px;font-weight:850;margin-top:7px;letter-spacing:-1px}.section{margin-top:26px}.survey-row,.withdraw-row,.tx-row{display:flex;justify-content:space-between;gap:16px;align-items:center;border-bottom:1px solid #eee;padding:16px 0}.survey-row:last-child,.withdraw-row:last-child,.tx-row:last-child{border-bottom:0}.pill{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:750}.available{background:#eef2ff;color:#4338ca}.progress{background:#fff7ed;color:#c2410c}.completed,.paid{background:#ecfdf3;color:#166534}.pending{background:#fff7ed;color:#9a3412}.processing{background:#eff6ff;color:#1d4ed8}.rejected{background:#fef2f2;color:#b91c1c}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.form-grid .full{grid-column:1/-1}label{display:block;font-weight:750;font-size:14px;margin-bottom:6px}input,select,textarea{width:100%;padding:12px 13px;border:1px solid #d1d5db;border-radius:11px;font:inherit;background:#fff}textarea{min-height:90px}.notice{margin:14px 0;padding:13px 15px;border-radius:12px;background:#f4f5f8}.muted{color:#667085;line-height:1.65}.hidden{display:none!important}[hidden]{display:none!important}.success{color:#166534}.danger{color:#b91c1c}.withdraw-methods{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:16px 0}.method-card{border:1px solid #e5e7eb;border-radius:15px;padding:14px;cursor:pointer}.method-card.active{border-color:#6d5dfc;box-shadow:0 0 0 3px #6d5dfc18}.method-card strong{display:block}.method-mode{font-size:12px;font-weight:700;margin-top:6px}.automatic{color:#15803d}.manual{color:#9a3412}.wallet-callout{background:linear-gradient(135deg,#f4f0ff,#eef8ff);border:1px solid #ddd7ff}.mini-note{font-size:13px;color:#667085}.survey-player{position:fixed;inset:0;z-index:100;background:rgba(15,23,42,.72);display:flex;align-items:stretch;justify-content:center;padding:18px}.survey-player[hidden]{display:none}.survey-player-card{width:min(1100px,100%);height:100%;background:#fff;border-radius:18px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.25)}.survey-player-head,.survey-player-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 16px;border-bottom:1px solid #e5e7eb}.survey-player-foot{border-top:1px solid #e5e7eb;border-bottom:0}.survey-player-card iframe{width:100%;height:100%;border:0;background:#fff;min-height:0}@media(max-width:1100px){.withdraw-methods{grid-template-columns:repeat(3,1fr)}}@media(max-width:850px){.shell{grid-template-columns:1fr}.side{position:sticky;top:0;height:auto;border-right:0;border-bottom:1px solid #e5e7eb;display:flex;overflow:auto;gap:5px;z-index:5}.side a,.side button{white-space:nowrap;width:auto}.grid{grid-template-columns:1fr 1fr}.content{padding:20px 14px}.withdraw-methods{grid-template-columns:1fr 1fr}}@media(max-width:560px){.grid,.form-grid,.withdraw-methods{grid-template-columns:1fr}.survey-row,.withdraw-row,.tx-row{align-items:flex-start;flex-direction:column}.survey-player{padding:0}.survey-player-card{border-radius:0}.survey-player-head,.survey-player-foot{padding:10px 12px}.survey-player-foot{align-items:flex-start;flex-direction:column}.survey-player-foot .button{width:100%}}
 
 *{box-sizing:border-box}.shell,.content,.card,.survey-row,.withdraw-row,.tx-row,.form-grid,.grid{min-width:0}.content{overflow-x:hidden}.survey-row>div:first-child,.withdraw-row>div:first-child,.tx-row>div:first-child{min-width:0;overflow-wrap:anywhere}.survey-row strong,.tx-row strong{overflow-wrap:anywhere}.button{max-width:100%}.nav{min-width:0}.nav>div{min-width:0;display:flex;align-items:center;gap:10px}.nav #topName{max-width:42vw;overflow-wrap:anywhere}.dashboard-footer{padding:24px 0 34px;border-top:1px solid #e7e8ef;margin-top:36px}.dashboard-footer .container{display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap}.dashboard-footer a{color:#4f46e5;text-decoration:none;font-weight:650}.dashboard-footer a:hover{text-decoration:underline}@media(max-width:560px){.content{padding:16px 12px}.card{padding:16px}.survey-row,.withdraw-row,.tx-row{gap:12px}.survey-row .button,.withdraw-row .button{width:100%}.nav{padding-left:12px;padding-right:12px}.nav>div{gap:6px}.nav #topName{max-width:45vw;font-size:12px}.dashboard-footer .container{align-items:flex-start;flex-direction:column}}
@@ -16,7 +17,14 @@
 <section data-section="surveys" hidden><h1>Surveys</h1><p class="muted">Answer unique multiple-choice questions about brands, products, global issues and current affairs. Each survey contains 10 questions. Answer all 10 and submit them together to complete the survey and earn the full participation reward. You receive five surveys at a time. After you complete all five, there is a 30-minute wait before a fresh set of surveys becomes available. New surveys are released automatically every 30 minutes after you complete all five surveys. You do not need to stay logged in while you wait.</p><div id="projectNotice" class="notice" hidden></div><div id="questionCard" class="card" hidden></div><div id="surveysList" class="card"></div></section>
 <section data-section="earnings" hidden><h1>Earnings</h1><div class="grid"><div class="card"><div class="muted">Total earned</div><div id="eTotal" class="big">$0.00</div></div><div class="card"><div class="muted">Available</div><div id="eAvailable" class="big">$0.00</div></div><div class="card"><div class="muted">Surveys completed</div><div id="eCompletedSurveys" class="big">0</div></div></div><div class="card section"><h2>Transaction history</h2><div id="transactions"></div></div></section>
 
-<section data-section="profile" hidden><h1>Profile</h1><div class="card"><div id="profileNotice" class="notice" hidden></div><form id="profileForm"><div class="form-grid"><div><label>Full name</label><input id="fullName" required></div><div><label>Email</label><input id="email" disabled></div><div><label>Phone</label><input id="phone"></div></div><button class="button primary" type="submit">Save profile</button></form></div></section>
+<section data-section="profile" hidden><h1>Profile</h1>
+<div class="card"><div id="profileNotice" class="notice" hidden></div><form id="profileForm">
+<div class="form-grid"><div><label>Full name</label><input id="fullName" required></div><div><label>Email</label><input id="email" disabled></div><div><label>Phone</label><input id="phone"></div></div>
+<button class="button primary" type="submit">Save profile</button></form></div>
+<div class="card section notification-card"><div><div class="eyebrow">NOTIFICATIONS</div><h2>Stay informed about new surveys</h2><p class="muted">Email notifications are on by default. You can also enable push notifications on this browser or installed web app.</p></div>
+<div class="notification-actions"><label class="notification-toggle"><input id="emailNotifications" type="checkbox"><span>Email notifications</span></label>
+<button id="enablePushBtn" class="button secondary" type="button">Enable push notifications</button></div>
+<p id="notificationNotice" class="notice" hidden aria-live="polite"></p></div></section>
 </div><div id="surveyPlayer" class="survey-player" hidden aria-hidden="true"><div class="survey-player-card"><div class="survey-player-head"><strong id="surveyPlayerTitle">Survey</strong><button id="closeSurveyPlayer" class="button secondary" type="button">Close</button></div><div id="surveyPlayerNotice" class="notice">The survey is loading.</div><iframe id="surveyFrame" title="Opinion survey" referrerpolicy="strict-origin-when-cross-origin" loading="eager"></iframe><div class="survey-player-foot"><span class="muted">Your participation reward is credited when your answer is successfully recorded.</span><a id="surveyFallback" class="button secondary" target="_blank" rel="noopener noreferrer">Open survey in new tab</a></div></div></div></main></div><footer class="dashboard-footer"><div class="container"><span class="muted">© 2026 LilianTech</span><span><a href="/terms.html">Terms of Service</a> · <a href="/privacy.html">Privacy Policy</a></span></div></footer>
 <script>
 const ADMIN_EMAILS=['wachirabernard983@gmail.com','stellawanjiku90@gmail.com','wachirabernard193@gmail.com'];
@@ -103,7 +111,50 @@ $('logoutBtn').onclick=async()=>{
   try{await fetch('/api/logout',{method:'POST',credentials:'include'})}
   finally{location.replace('/')}
 };
-subscribeToPush();
+async function loadNotificationPreferences(){
+  try{
+    const p=await api('/api/notifications/preferences');
+    const box=$('emailNotifications'); if(box) box.checked=!!p.emailEnabled;
+    const btn=$('enablePushBtn');
+    if(btn){
+      if(!p.pushSupported || !('serviceWorker' in navigator) || !('PushManager' in window)){
+        btn.disabled=true; btn.textContent='Push notifications unavailable';
+      } else {
+        const reg=await navigator.serviceWorker.register('/sw.js');
+        const sub=await reg.pushManager.getSubscription();
+        btn.textContent=sub?'Push notifications enabled':'Enable push notifications';
+      }
+    }
+  }catch(e){console.warn('Notification preferences:',e.message)}
+}
+async function enablePushFromButton(){
+  const notice=$('notificationNotice'),btn=$('enablePushBtn');
+  try{
+    btn.disabled=true; btn.textContent='Enabling…';
+    const cfg=await api('/api/notifications/config');
+    if(!cfg.pushEnabled) throw new Error('Push notifications are not configured yet.');
+    if(!('Notification' in window)) throw new Error('This browser does not support push notifications.');
+    const permission=await Notification.requestPermission();
+    if(permission!=='granted') throw new Error('Push permission was not granted.');
+    const reg=await navigator.serviceWorker.register('/sw.js');
+    let sub=await reg.pushManager.getSubscription();
+    if(!sub) sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64ToUint8(cfg.publicKey)});
+    await api('/api/notifications/push/subscribe',{method:'POST',body:JSON.stringify(sub.toJSON())});
+    btn.textContent='Push notifications enabled';
+    notice.textContent='Push notifications are enabled for this browser.';
+    notice.hidden=false;
+  }catch(e){
+    btn.disabled=false; btn.textContent='Enable push notifications';
+    notice.textContent=e.message||'Unable to enable push notifications.';
+    notice.hidden=false;
+  }
+}
+$('emailNotifications')?.addEventListener('change',async e=>{
+  try{const d=await api('/api/notifications/preferences',{method:'PUT',body:JSON.stringify({emailEnabled:e.target.checked})});$('notificationNotice').textContent=d.message;$('notificationNotice').hidden=false;}
+  catch(x){e.target.checked=!e.target.checked;$('notificationNotice').textContent=x.message;$('notificationNotice').hidden=false;}
+});
+$('enablePushBtn')?.addEventListener('click',enablePushFromButton);
+loadNotificationPreferences();
 startSurveyStream();
 refresh().catch(e=>{
   console.error(e);
