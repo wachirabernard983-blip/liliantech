@@ -119,6 +119,9 @@ async function initializeDatabase() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_code_hash VARCHAR(64);
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_code_hash VARCHAR(64);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_attempts INTEGER NOT NULL DEFAULT 0;
 
     CREATE INDEX IF NOT EXISTS idx_users_email_verified ON users(email_verified_at);
     CREATE TABLE IF NOT EXISTS pending_registrations (
@@ -776,6 +779,42 @@ async function sendVerificationCodeEmail(email, code, isResend=false){
   await mailer.sendMail({from:notificationFrom(),to:email,subject,text,html});
 }
 
+
+async function sendPasswordResetEmail(email, code){
+  const subject = "Reset your LilianTech password";
+  const text = `Your LilianTech password reset code is ${code}. It expires in 15 minutes. If you did not request a password reset, you can ignore this email.`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#111827">
+      <h2 style="margin:0 0 16px">Reset your LilianTech password</h2>
+      <p>We received a request to reset the password for your LilianTech account.</p>
+      <div style="font-size:34px;letter-spacing:9px;font-weight:700;margin:26px 0">${code}</div>
+      <p>This code expires in <strong>15 minutes</strong>.</p>
+      <p>If you did not request this, you can safely ignore this email. Your password will remain unchanged.</p>
+      <p style="margin-top:28px;color:#667085">LilianTech<br>support@liliantech.online</p>
+    </div>`;
+  const resendKey = String(process.env.RESEND_API_KEY || '').trim();
+  if(resendKey){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch('https://api.resend.com/emails', {
+        method:'POST',
+        headers:{'Authorization':`Bearer ${resendKey}`,'Content-Type':'application/json'},
+        body:JSON.stringify({from:notificationFrom(),to:[email],subject,text,html}),
+        signal:controller.signal
+      });
+      const body = await response.text();
+      if(!response.ok) throw new Error(`Resend email delivery failed (${response.status}): ${body.slice(0,300)}`);
+      return;
+    } catch(err){
+      if(err?.name === 'AbortError') throw new Error('Email provider timed out after 15 seconds. Please try again.');
+      throw err;
+    } finally { clearTimeout(timer); }
+  }
+  const mailer=getNotificationEmailTransport();
+  if(!mailer) throw new Error('Email delivery is not configured. Please contact support@liliantech.online.');
+  await mailer.sendMail({from:notificationFrom(),to:email,subject,text,html});
+}
+
 async function issuePendingVerification(email, isResend=false){
   const code=generateVerificationCode();
   const expiresAt=new Date(Date.now()+10*60*1000);
@@ -1062,6 +1101,59 @@ app.post("/api/register/complete", authRateLimit, async (req,res)=>{
   }catch(e){
     console.error("Registration completion error:",e);
     res.status(500).json({error:"Unable to create your account right now."});
+  }
+});
+
+
+app.post("/api/password-reset/start", authRateLimit, async (req,res)=>{
+  try{
+    const email=String(req.body?.email||'').trim().toLowerCase();
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({error:'Please enter a valid email address.'});
+    const result=await pool.query(`SELECT id,email_verified_at FROM users WHERE email=$1`,[email]);
+    // Do not reveal whether an email is registered.
+    if(!result.rows.length || !result.rows[0].email_verified_at){
+      return res.json({message:'If an account exists for that email, a password reset code has been sent.'});
+    }
+    const code=generateVerificationCode();
+    await pool.query(`UPDATE users SET password_reset_code_hash=$1,password_reset_expires_at=$2,password_reset_attempts=0 WHERE id=$3`,[hashVerificationCode(code),new Date(Date.now()+15*60*1000),result.rows[0].id]);
+    try{
+      await sendPasswordResetEmail(email,code);
+    }catch(mailError){
+      await pool.query(`UPDATE users SET password_reset_code_hash=NULL,password_reset_expires_at=NULL,password_reset_attempts=0 WHERE id=$1`,[result.rows[0].id]);
+      throw mailError;
+    }
+    res.json({message:'If an account exists for that email, a password reset code has been sent.'});
+  }catch(e){
+    console.error('Password reset start error:',e);
+    res.status(500).json({error:e.message||'Unable to send a password reset code right now.'});
+  }
+});
+
+app.post("/api/password-reset/complete", authRateLimit, async (req,res)=>{
+  try{
+    const email=String(req.body?.email||'').trim().toLowerCase();
+    const code=String(req.body?.code||'').trim();
+    const password=String(req.body?.password||'');
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({error:'Please enter a valid email address.'});
+    if(!/^\d{6}$/.test(code)) return res.status(400).json({error:'Enter the 6-digit reset code.'});
+    if(password.length<8) return res.status(400).json({error:'Password must be at least 8 characters.'});
+    const result=await pool.query(`SELECT id,password_reset_code_hash,password_reset_expires_at,password_reset_attempts FROM users WHERE email=$1 AND email_verified_at IS NOT NULL`,[email]);
+    if(!result.rows.length) return res.status(400).json({error:'That reset code is invalid or has expired. Please request a new one.'});
+    const user=result.rows[0];
+    if(Number(user.password_reset_attempts||0)>=5) return res.status(429).json({error:'Too many incorrect attempts. Please request a new reset code.'});
+    if(!user.password_reset_expires_at || new Date(user.password_reset_expires_at).getTime()<Date.now()){
+      await pool.query(`UPDATE users SET password_reset_code_hash=NULL,password_reset_expires_at=NULL,password_reset_attempts=0 WHERE id=$1`,[user.id]);
+      return res.status(400).json({error:'That reset code has expired. Please request a new one.'});
+    }
+    if(hashVerificationCode(code)!==user.password_reset_code_hash){
+      await pool.query(`UPDATE users SET password_reset_attempts=password_reset_attempts+1 WHERE id=$1`,[user.id]);
+      return res.status(400).json({error:'The reset code is incorrect.'});
+    }
+    await pool.query(`UPDATE users SET password_hash=$1,password_reset_code_hash=NULL,password_reset_expires_at=NULL,password_reset_attempts=0 WHERE id=$2`,[hashPassword(password),user.id]);
+    res.json({message:'Your password has been reset successfully. You can now sign in.',redirect:'/login.html?reset=1'});
+  }catch(e){
+    console.error('Password reset completion error:',e);
+    res.status(500).json({error:'Unable to reset your password right now.'});
   }
 });
 

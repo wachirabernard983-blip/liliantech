@@ -72,3 +72,12 @@ TheoremReach configuration:
 - Members receive exactly five active surveys at a time. A new five-survey batch is generated after the member completes all five, without waiting for the global 1,000-response cap.
 - Survey inventory refreshes every 30 minutes, with an immediate refresh after submission.
 - New-batch notifications can target the member who unlocked the batch.
+
+
+## v7.2 account and navigation polish
+
+- Added password reset by email with a 6-digit recovery code.
+- Added show/hide password controls to sign-in and password creation/reset forms.
+- Standardized authentication pages, spacing, labels, buttons and navigation.
+- Improved dashboard header alignment so LilianTech stays at the far left and the member email/logout controls stay at the far right.
+- Added lightweight page-entry motion and consistent mobile navigation behavior.
