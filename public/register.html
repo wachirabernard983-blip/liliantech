@@ -27,8 +27,8 @@
       <p class="public-intro">Enter your name and email first. We'll send you a verification code before you create your password.</p>
 
       <form id="registerForm" class="auth-form">
-        <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Betty Katelin" autocomplete="name" required></div>
-        <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="bettykatelin@gmail.com" autocomplete="email" required></div>
+        <div><label for="fullName">Full name</label><input id="fullName" name="fullName" type="text" placeholder="Your full name" autocomplete="section-registration name" required></div>
+        <div><label for="email">Email</label><input id="email" name="email" type="email" placeholder="you@example.com" autocomplete="section-registration email" required></div>
         <label class="check"><input id="terms" type="checkbox" required><span>I agree to the <a href="/terms.html">Terms of Service</a> and <a href="/privacy.html">Privacy Policy</a>.</span></label>
         <button class="button primary button-lg" type="submit">Send verification code</button>
         <p id="message" class="form-message" aria-live="polite"></p>
@@ -50,19 +50,35 @@ const form=document.getElementById('registerForm');
 const message=document.getElementById('message');
 form.addEventListener('submit',async(e)=>{
  e.preventDefault();
+ const button=form.querySelector('button');
+ const fullName=document.getElementById('fullName').value.trim();
+ const email=document.getElementById('email').value.trim().toLowerCase();
+ const accepted=document.getElementById('terms').checked;
+ if(!fullName || !email || !accepted) return;
  message.textContent='Sending your verification code…';
- const button=form.querySelector('button'); button.disabled=true;
+ button.disabled=true;
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),20000);
  try{
-   const r=await fetch('/api/register/start',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-     fullName:document.getElementById('fullName').value.trim(),
-     email:document.getElementById('email').value.trim(),
-     termsAccepted:document.getElementById('terms').checked,
-     privacyAccepted:document.getElementById('terms').checked
-   })});
+   const r=await fetch('/api/register/start',{
+     method:'POST',
+     credentials:'same-origin',
+     headers:{'Content-Type':'application/json','Accept':'application/json'},
+     signal:controller.signal,
+     body:JSON.stringify({fullName,email,termsAccepted:accepted,privacyAccepted:accepted})
+   });
    const data=await r.json().catch(()=>({}));
    if(!r.ok) throw new Error(data.error||'Unable to send the verification code.');
+   if(!data.email) throw new Error('Verification started, but no email address was returned. Please try again.');
    window.location.href='/verify-email.html?email='+encodeURIComponent(data.email);
- }catch(err){message.textContent=err.message;button.disabled=false;}
+ }catch(err){
+   message.textContent=err.name==='AbortError'
+     ? 'The email service is taking too long to respond. Please try again in a moment.'
+     : (err.message||'Unable to send the verification code. Please try again.');
+   button.disabled=false;
+ }finally{
+   clearTimeout(timeout);
+ }
 });
 </script>
 </body>
